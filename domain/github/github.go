@@ -37,12 +37,11 @@ type Label struct {
 // TimelineEvent captures various events, including project card movements
 // Note: Only fields used by the collector are modeled
 type TimelineEvent struct {
-	Event         string         `json:"event"`
-	CreatedAt     time.Time      `json:"created_at"`
-	Actor         *User          `json:"actor"`
-	ProjectCard   *ProjectCard   `json:"project_card"`
-	ProjectColumn *ProjectColumn `json:"project_column"`
-	Project       *Project       `json:"project"`
+	Event       string       `json:"event"`
+	CreatedAt   time.Time    `json:"created_at"`
+	Actor       *User        `json:"actor"`
+	ProjectCard *ProjectCard `json:"project_card"`
+	Project     *Project     `json:"project"`
 	// For moved events, GitHub often provides these names
 	ProjectColumnName         string `json:"project_column_name"`
 	PreviousProjectColumnName string `json:"previous_project_column_name"`
@@ -55,14 +54,8 @@ type ProjectCard struct {
 	ColumnURL string `json:"column_url"`
 }
 
-type ProjectColumn struct {
-	ID        int64  `json:"id"`
-	Name      string `json:"name"`
-	ProjectID int64  `json:"project_id"`
-}
-
 type Project struct {
-	ID   int64  `json:"id"`
+	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
@@ -75,7 +68,7 @@ type StatusEvent struct {
 
 // ProjectMoveEvent captures added/moved/removed events within classic Projects
 type ProjectMoveEvent struct {
-	ProjectID   int64     `json:"project_id"`
+	ProjectID   string    `json:"project_id"`
 	ProjectName string    `json:"project_name,omitempty"`
 	FromColumn  string    `json:"from_column,omitempty"`
 	ToColumn    string    `json:"to_column,omitempty"`
@@ -104,7 +97,7 @@ type IssueReport struct {
 }
 
 type CurrentProject struct {
-	ProjectID   int64  `json:"project_id"`
+	ProjectID   string `json:"project_id"`
 	ProjectName string `json:"project_name,omitempty"`
 	ColumnID    int64  `json:"column_id,omitempty"`
 	ColumnName  string `json:"column_name,omitempty"`

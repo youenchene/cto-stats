@@ -1,0 +1,243 @@
+package cmdimport
+
+import (
+	"context"
+	ccsv "cto-stats/connectors/csv"
+	cg "cto-stats/connectors/github"
+	gh "cto-stats/domain/github"
+	"flag"
+	"fmt"
+	"log/slog"
+	"os"
+	"strings"
+)
+
+// Type aliases to avoid leaking internal domain types to callers while keeping code concise here
+// (same as previous main.go aliases)
+type Repo = gh.Repo
+
+type Issue = gh.Issue
+
+type User = gh.User
+
+type Label = gh.Label
+
+type TimelineEvent = gh.TimelineEvent
+
+type Project = gh.Project
+
+type StatusEvent = gh.StatusEvent
+
+type ProjectMoveEvent = gh.ProjectMoveEvent
+
+type IssueReport = gh.IssueReport
+
+type CurrentProject = gh.CurrentProject
+
+// Run executes the import subcommand. It expects flag arguments like: -org, -since, -repo.
+func Run(args []string) error {
+	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	org := fs.String("org", "", "GitHub organization (required)")
+	since := fs.String("since", "", "Only issues updated since this ISO8601/RFC3339 time, e.g., 2025-01-01T00:00:00Z (optional)")
+	repoFilter := fs.String("repo", "", "Comma-separated list of repositories to include (optional)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	// Initialize slog logger (text to stderr, DEBUG level for now)
+	h := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})
+	slog.SetDefault(slog.New(h))
+
+	if *org == "" {
+		fmt.Fprintln(os.Stderr, "-org is required")
+		slog.Error("import.validation.error", "reason", "missing org")
+		return fmt.Errorf("missing required -org")
+	}
+
+	token := os.Getenv("GITHUB_TOKEN")
+	if token == "" {
+		fmt.Fprintln(os.Stderr, "GITHUB_TOKEN environment variable is required.")
+		slog.Error("import.validation.error", "reason", "missing GITHUB_TOKEN")
+		return fmt.Errorf("missing GITHUB_TOKEN")
+	}
+
+	slog.Info("import.start", "org", *org, "since", *since, "repoFilter", *repoFilter)
+
+	ctx := context.Background()
+	ghc := cg.New(nil, token)
+
+	allowedRepos := map[string]bool{}
+	if *repoFilter != "" {
+		for _, r := range strings.Split(*repoFilter, ",") {
+			allowedRepos[strings.TrimSpace(r)] = true
+		}
+	}
+
+	repos, err := ghc.ListAllRepos(ctx, *org)
+	if err != nil {
+		slog.Error("phase.repos.fetch.error", "org", *org, "error", err)
+		fmt.Fprintf(os.Stderr, "error listing repos: %v\n", err)
+		return err
+	}
+
+	var reports []IssueReport
+	for _, r := range repos {
+		if *repoFilter != "" && !allowedRepos[r.Name] {
+			continue
+		}
+		slog.Info("phase.issues.import.start", "owner", r.Owner.Login, "repo", r.Name, "since", *since)
+		issues, err := ghc.ListAllIssues(ctx, r.Owner.Login, r.Name, *since)
+		if err != nil {
+			slog.Error("phase.issues.fetch.error", "owner", r.Owner.Login, "repo", r.Name, "error", err)
+			fmt.Fprintf(os.Stderr, "error listing issues for %s/%s: %v\n", r.Owner.Login, r.Name, err)
+			continue
+		}
+		slog.Info("phase.issues.import.fetched", "owner", r.Owner.Login, "repo", r.Name, "count", len(issues))
+		for _, is := range issues {
+			// Skip PRs
+			if is.PullRequest != nil {
+				continue
+			}
+			// timeline aggregation below
+			report := IssueReport{
+				Org:       *org,
+				Repo:      r.Name,
+				Number:    is.Number,
+				Title:     is.Title,
+				URL:       is.HTMLURL,
+				State:     is.State,
+				Creator:   valueOrEmpty(is.User),
+				Assignees: usersToLogins(is.Assignees),
+				CreatedAt: is.CreatedAt,
+				ClosedAt:  is.ClosedAt,
+			}
+			for _, l := range is.Labels {
+				if strings.EqualFold(l.Name, "bug") {
+					report.IsBug = true
+					break
+				}
+			}
+
+			// Timeline aggregation
+			evts, err := ghc.ListAllTimeline(ctx, r.Owner.Login, r.Name, is.Number)
+			if err != nil {
+				slog.Warn("phase.timeline.fetch.error", "owner", r.Owner.Login, "repo", r.Name, "issue", is.Number, "error", err)
+				fmt.Fprintf(os.Stderr, "warning: timeline fetch failed for %s/%s#%d: %v\n", r.Owner.Login, r.Name, is.Number, err)
+			} else {
+				statusHist := make([]StatusEvent, 0, 4)
+				projHist := make([]ProjectMoveEvent, 0, 8)
+				// seed opened
+				statusHist = append(statusHist, StatusEvent{Type: "opened", At: is.CreatedAt, By: valueOrEmpty(is.User)})
+				// Track current per project
+				type current struct {
+					present     bool
+					projectID   string
+					projectName string
+					columnID    int64
+					columnName  string
+				}
+				currentByProject := map[string]*current{}
+
+				for _, ev := range evts {
+					slog.Debug(ev.Event)
+					switch ev.Event {
+					case "closed":
+						statusHist = append(statusHist, StatusEvent{Type: "closed", At: ev.CreatedAt, By: valueOrEmpty(ev.Actor)})
+						// set committer as the actor who closed
+						if report.Committer == "" && ev.Actor != nil {
+							report.Committer = ev.Actor.Login
+						}
+					case "reopened":
+						statusHist = append(statusHist, StatusEvent{Type: "reopened", At: ev.CreatedAt, By: valueOrEmpty(ev.Actor)})
+					case "added_to_project_v2":
+						var projID string
+						var projName string
+						if ev.Project != nil {
+							projID = ev.Project.ID
+							projName = ev.Project.Name
+						}
+						if projID != "" {
+							projHist = append(projHist, ProjectMoveEvent{ProjectID: projID, ProjectName: projName, FromColumn: "", At: ev.CreatedAt, By: valueOrEmpty(ev.Actor), Type: "added"})
+							c := &current{present: true, projectID: projID, projectName: projName}
+							currentByProject[projID] = c
+						}
+					case "project_v2_item_status_changed":
+						var projID string
+						var projName string
+						var colNameTo = ev.ProjectColumnName
+						var colNameFrom = ev.PreviousProjectColumnName
+						// Prefer GraphQL-provided project info
+						if ev.Project != nil {
+							projID = ev.Project.ID
+							projName = ev.Project.Name
+						}
+						if projID != "" {
+							projHist = append(projHist, ProjectMoveEvent{ProjectID: projID, ProjectName: projName, FromColumn: colNameFrom, ToColumn: colNameTo, At: ev.CreatedAt, By: valueOrEmpty(ev.Actor), Type: "moved"})
+							c := currentByProject[projID]
+							if c == nil {
+								c = &current{present: true, projectID: projID, projectName: projName}
+								currentByProject[projID] = c
+							}
+							c.present = true
+							c.projectName = projName
+							c.columnName = colNameTo
+						}
+					case "removed_from_project_v2":
+						var projID string
+						var projName string
+						if ev.Project != nil {
+							projID = ev.Project.ID
+							projName = ev.Project.Name
+						}
+						if projID != "" {
+							projHist = append(projHist, ProjectMoveEvent{ProjectID: projID, ProjectName: projName, FromColumn: "", ToColumn: "", At: ev.CreatedAt, By: valueOrEmpty(ev.Actor), Type: "removed"})
+							c := currentByProject[projID]
+							if c == nil {
+								c = &current{projectID: projID, projectName: projName}
+								currentByProject[projID] = c
+							}
+							c.present = false
+						}
+					}
+				}
+
+				report.StatusHistory = statusHist
+				report.ProjectHistory = projHist
+				for pid, cur := range currentByProject {
+					if cur.present {
+						report.CurrentProjects = append(report.CurrentProjects, CurrentProject{ProjectID: pid, ProjectName: cur.projectName, ColumnID: cur.columnID, ColumnName: cur.columnName})
+					}
+				}
+			}
+
+			reports = append(reports, report)
+		}
+	}
+
+	// Write CSV outputs into data/ directory
+	if err := ccsv.WriteAllCSVs(*org, repos, reports); err != nil {
+		slog.Error("phase.csv.write.error", "error", err)
+		fmt.Fprintf(os.Stderr, "failed to write CSV outputs: %v\n", err)
+		// do not exit; JSON already written
+	}
+	slog.Info("import.done", "reports", len(reports))
+	return nil
+}
+
+func valueOrEmpty(u *User) string {
+	if u == nil {
+		return ""
+	}
+	return u.Login
+}
+
+func usersToLogins(us []User) []string {
+	res := make([]string, 0, len(us))
+	for _, u := range us {
+		if u.Login != "" {
+			res = append(res, u.Login)
+		}
+	}
+	return res
+}
