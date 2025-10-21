@@ -133,6 +133,16 @@ func Run(args []string) error {
 		return err
 	}
 
+	// Step 4: current stocks for not-closed issues by stage
+	if err := writeStocks(filepath.Join(base, "stocks.csv"), out); err != nil {
+		return err
+	}
+
+	// Step 5: weekly stocks per project by ISO year-week (cutoff at Sunday 23:59:59 UTC)
+	if err := writeWeeklyStocks(filepath.Join(base, "stocks_week.csv"), out); err != nil {
+		return err
+	}
+
 	fmt.Fprintf(os.Stderr, "calculate.done count=%d\n", len(out))
 	return nil
 }
@@ -613,6 +623,302 @@ func writeWeeklyThroughput(path string, rows []calculatedIssue) error {
 		}
 		if err := w.Write(row); err != nil {
 			return err
+		}
+	}
+	return w.Error()
+}
+
+// Step 4: stocks for not-closed issues by stage
+func writeStocks(path string, rows []calculatedIssue) error {
+	// aggregate by project
+	type agg struct {
+		OpenedBugs    int
+		InBacklogs    int
+		InDev         int
+		InReview      int
+		InQA          int
+		WaitingToProd int
+	}
+	byProj := map[string]struct {
+		ProjectID   string
+		ProjectName string
+		Agg         agg
+	}{}
+	// helper to get bucket/stage booleans for a not-closed issue
+	stageFlags := func(r calculatedIssue) (openedBug bool, inBacklog bool, inDev bool, inReview bool, inQA bool, waiting bool) {
+		if r.EndDatetime != nil {
+			return false, false, false, false, false, false
+		}
+		openedBug = r.Bug
+		// Stage logic: take the furthest known stage, ensuring exclusivity across stages
+		if r.WaitingToPodStartDatetime != nil {
+			return openedBug, false, false, false, false, true
+		}
+		if r.QAStartDatetime != nil {
+			return openedBug, false, false, false, true, false
+		}
+		if r.ReviewStartDatetime != nil {
+			return openedBug, false, false, true, false, false
+		}
+		if r.DevStartDatetime != nil {
+			return openedBug, false, true, false, false, false
+		}
+		// Backlog (only early dates present: creation/lead/cycle)
+		return openedBug, true, false, false, false, false
+	}
+	for _, r := range rows {
+		if r.EndDatetime != nil {
+			continue // only not-closed
+		}
+		key := r.ProjectID + "\u0000" + r.ProjectName
+		rec := byProj[key]
+		rec.ProjectID = r.ProjectID
+		rec.ProjectName = r.ProjectName
+		ob, ib, id, ir, iq, iw := stageFlags(r)
+		if ob {
+			rec.Agg.OpenedBugs++
+		}
+		if ib {
+			rec.Agg.InBacklogs++
+		}
+		if id {
+			rec.Agg.InDev++
+		}
+		if ir {
+			rec.Agg.InReview++
+		}
+		if iq {
+			rec.Agg.InQA++
+		}
+		if iw {
+			rec.Agg.WaitingToProd++
+		}
+		byProj[key] = rec
+	}
+	// Write CSV
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	headers := []string{"project_id", "project_name", "opened_bugs", "in_backlogs", "in_dev", "in_review", "in_qa", "waiting_to_prod"}
+	if err := w.Write(headers); err != nil {
+		return err
+	}
+	// stable order by project_id then name
+	var keys []string
+	for k := range byProj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		rec := byProj[k]
+		row := []string{
+			rec.ProjectID,
+			rec.ProjectName,
+			fmt.Sprintf("%d", rec.Agg.OpenedBugs),
+			fmt.Sprintf("%d", rec.Agg.InBacklogs),
+			fmt.Sprintf("%d", rec.Agg.InDev),
+			fmt.Sprintf("%d", rec.Agg.InReview),
+			fmt.Sprintf("%d", rec.Agg.InQA),
+			fmt.Sprintf("%d", rec.Agg.WaitingToProd),
+		}
+		if err := w.Write(row); err != nil {
+			return err
+		}
+	}
+	return w.Error()
+}
+
+// Step 5: weekly stocks per project and ISO week with Sunday cutoff (UTC)
+func writeWeeklyStocks(path string, rows []calculatedIssue) error {
+	// Determine range of weeks
+	timeUTC := func(t time.Time) time.Time { return t.UTC() }
+	var minT, maxT *time.Time
+	for _, r := range rows {
+		c := timeUTC(r.CreationDatetime)
+		if minT == nil || c.Before(*minT) {
+			t := c
+			minT = &t
+		}
+		cands := []*time.Time{r.LeadTimeStartDatetime, r.CycleTimeStartDatetime, r.DevStartDatetime, r.ReviewStartDatetime, r.QAStartDatetime, r.WaitingToPodStartDatetime, r.EndDatetime}
+		for _, p := range cands {
+			if p == nil {
+				continue
+			}
+			t := p.UTC()
+			if maxT == nil || t.After(*maxT) {
+				u := t
+				maxT = &u
+			}
+		}
+	}
+	if minT == nil {
+		// nothing to write, create headers only
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		f, err := os.Create(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		w := csv.NewWriter(f)
+		defer w.Flush()
+		headers := []string{"year", "week", "project_id", "project_name", "opened_bugs", "in_backlogs", "in_dev", "in_review", "in_qa", "waiting_to_prod"}
+		if err := w.Write(headers); err != nil {
+			return err
+		}
+		return w.Error()
+	}
+	if maxT == nil {
+		m := time.Now().UTC()
+		maxT = &m
+	}
+	// Align to Monday 00:00 UTC of ISO week
+	alignToMonday := func(t time.Time) time.Time {
+		wd := int(t.Weekday())
+		offset := (wd + 6) % 7
+		tt := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+		return tt.AddDate(0, 0, -offset)
+	}
+	start := alignToMonday(*minT)
+	end := alignToMonday(*maxT)
+	type wk struct{ Year, Week int }
+	// Iterate weeks
+	type agg struct{ OpenedBugs, InBacklogs, InDev, InReview, InQA, WaitingToProd int }
+	type rec struct {
+		ProjectID, ProjectName string
+		Agg                    agg
+	}
+	// Helper: determine stage at cutoff
+	stageAt := func(r calculatedIssue, cutoff time.Time) (openedBug bool, inBacklog bool, inDev bool, inReview bool, inQA bool, waiting bool) {
+		cu := cutoff
+		// Not yet created
+		if timeUTC(r.CreationDatetime).After(cu) {
+			return false, false, false, false, false, false
+		}
+		// If ended before or at cutoff, it is not in stock
+		if r.EndDatetime != nil && !r.EndDatetime.UTC().After(cu) {
+			return false, false, false, false, false, false
+		}
+		openedBug = r.Bug
+		// Helper to check ts <= cutoff
+		le := func(t *time.Time) bool { return t != nil && !t.UTC().After(cu) }
+		// Furthest stage reached as of cutoff (no later stage timestamp <= cutoff)
+		// Waiting
+		if le(r.WaitingToPodStartDatetime) {
+			return openedBug, false, false, false, false, true
+		}
+		// QA
+		if le(r.QAStartDatetime) && !le(r.WaitingToPodStartDatetime) {
+			return openedBug, false, false, false, true, false
+		}
+		// Review
+		if le(r.ReviewStartDatetime) && !le(r.QAStartDatetime) && !le(r.WaitingToPodStartDatetime) {
+			return openedBug, false, false, true, false, false
+		}
+		// Dev
+		if le(r.DevStartDatetime) && !le(r.ReviewStartDatetime) && !le(r.QAStartDatetime) && !le(r.WaitingToPodStartDatetime) {
+			return openedBug, false, true, false, false, false
+		}
+		// Backlog if created and dev not started as of cutoff
+		return openedBug, true, false, false, false, false
+	}
+	// Aggregate per week per project
+	byWeekProj := map[wk]map[string]rec{}
+	for cur := start; !cur.After(end); cur = cur.AddDate(0, 0, 7) {
+		// Sunday end-of-day cutoff: Monday+6 days 23:59:59.999...
+		cutoff := time.Date(cur.Year(), cur.Month(), cur.Day(), 23, 59, 59, int(time.Second-time.Nanosecond), time.UTC).AddDate(0, 0, 6)
+		y, w := cur.ISOWeek()
+		projMap := map[string]rec{}
+		for _, r := range rows {
+			ob, ib, id, ir, iq, iw := stageAt(r, cutoff)
+			if !(ob || ib || id || ir || iq || iw) {
+				continue
+			}
+			k := r.ProjectID + "\u0000" + r.ProjectName
+			rr := projMap[k]
+			rr.ProjectID = r.ProjectID
+			rr.ProjectName = r.ProjectName
+			if ob {
+				rr.Agg.OpenedBugs++
+			}
+			if ib {
+				rr.Agg.InBacklogs++
+			}
+			if id {
+				rr.Agg.InDev++
+			}
+			if ir {
+				rr.Agg.InReview++
+			}
+			if iq {
+				rr.Agg.InQA++
+			}
+			if iw {
+				rr.Agg.WaitingToProd++
+			}
+			projMap[k] = rr
+		}
+		byWeekProj[wk{Year: y, Week: w}] = projMap
+	}
+	// Write CSV
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	headers := []string{"year", "week", "project_id", "project_name", "opened_bugs", "in_backlogs", "in_dev", "in_review", "in_qa", "waiting_to_prod"}
+	if err := w.Write(headers); err != nil {
+		return err
+	}
+	// stable iterate weeks then project keys
+	// collect and sort week keys
+	var weeks []wk
+	for k := range byWeekProj {
+		weeks = append(weeks, k)
+	}
+	sort.Slice(weeks, func(i, j int) bool {
+		if weeks[i].Year != weeks[j].Year {
+			return weeks[i].Year < weeks[j].Year
+		}
+		return weeks[i].Week < weeks[j].Week
+	})
+	for _, k := range weeks {
+		projMap := byWeekProj[k]
+		var pkeys []string
+		for pk := range projMap {
+			pkeys = append(pkeys, pk)
+		}
+		sort.Strings(pkeys)
+		for _, pk := range pkeys {
+			rec := projMap[pk]
+			row := []string{
+				fmt.Sprintf("%d", k.Year),
+				fmt.Sprintf("%02d", k.Week),
+				rec.ProjectID,
+				rec.ProjectName,
+				fmt.Sprintf("%d", rec.Agg.OpenedBugs),
+				fmt.Sprintf("%d", rec.Agg.InBacklogs),
+				fmt.Sprintf("%d", rec.Agg.InDev),
+				fmt.Sprintf("%d", rec.Agg.InReview),
+				fmt.Sprintf("%d", rec.Agg.InQA),
+				fmt.Sprintf("%d", rec.Agg.WaitingToProd),
+			}
+			if err := w.Write(row); err != nil {
+				return err
+			}
 		}
 	}
 	return w.Error()
