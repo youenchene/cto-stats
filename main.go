@@ -3,6 +3,7 @@ package main
 import (
 	cmdcalculate "cto-stats/command/calculate"
 	cmdimport "cto-stats/command/import"
+	cmdweb "cto-stats/command/web"
 	gh "cto-stats/domain/github"
 	"fmt"
 	"os"
@@ -53,9 +54,15 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "web":
+			if err := cmdweb.Run(args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			return
 		}
 	}
-	fmt.Fprintln(os.Stderr, "usage: github-stats import -org <org> [-since <ts>] [-repo <list>] | calculate")
+	fmt.Fprintln(os.Stderr, "usage: github-stats import -org <org> [-since <ts>] [-repo <list>] | calculate | web [-addr :8080] [-data ./data]")
 	os.Exit(2)
 }
 
