@@ -22,6 +22,13 @@ export function useStocksWeek() {
   })
 }
 
+export function useStocks() {
+  return useQuery<Row[]>({
+    queryKey: ['stocks'],
+    queryFn: () => fetchJSON('/api/stocks'),
+  })
+}
+
 export function useThroughputMonth() {
   return useQuery<Row[]>({
     queryKey: ['throughput_month'],

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 )
@@ -71,18 +72,24 @@ func Run(args []string) error {
 	// Static UI (optional)
 	indexPath := filepath.Join(*uiDir, "index.html")
 	if fi, err := os.Stat(indexPath); err == nil && !fi.IsDir() {
-		// Serve assets under /
+		// Serve built assets under /
 		e.Static("/", *uiDir)
 		// Root path -> index.html
 		e.GET("/", func(c echo.Context) error { return c.File(indexPath) })
-		// Catch-all for SPA (excluding API): always return index.html
-		e.GET("/*", func(c echo.Context) error {
-			p := c.Request().URL.Path
-			if len(p) >= 4 && p[:4] == "/api" {
-				return echo.NewHTTPError(http.StatusNotFound, "not found")
+
+		// Fallback to index.html for non-API 404s (SPA routing) while keeping static assets working
+		e.HTTPErrorHandler = func(err error, c echo.Context) {
+			// If it's a 404 and not under /api, serve the SPA index instead
+			if he, ok := err.(*echo.HTTPError); ok && he.Code == http.StatusNotFound {
+				p := c.Request().URL.Path
+				if !strings.HasPrefix(p, "/api") {
+					// Try to serve index.html
+					_ = c.File(indexPath)
+					return
+				}
 			}
-			return c.File(indexPath)
-		})
+			e.DefaultHTTPErrorHandler(err, c)
+		}
 	}
 
 	return e.Start(*addr)

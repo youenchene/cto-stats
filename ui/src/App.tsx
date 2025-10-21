@@ -1,15 +1,20 @@
 import React from 'react'
-import { useCycleTimes, useStocksWeek, useThroughputMonth, useThroughputWeek } from './api'
+import { useCycleTimes, useStocks, useStocksWeek, useThroughputMonth, useThroughputWeek } from './api'
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card'
 import { Sparkline } from './components/Sparkline'
 import { LineChart, Point } from './components/LineChart'
+import { StackedBarChart, StackSeries } from './components/StackedBarChart'
 import { parseNumber } from './lib/utils'
 
-function BigNumber({ label, value }: { label: string; value: number | null }) {
+function BigNumber({ label, value, unit }: { label: string; value: number | null; unit?: string }) {
+  const hasValue = value != null
   return (
     <div className="flex flex-col">
       <div className="text-sm text-gray-500 mb-1">{label}</div>
-      <div className="text-4xl font-bold">{value != null ? value.toFixed(0) : '—'}</div>
+      <div className="text-4xl font-bold flex items-baseline gap-2">
+        <span>{hasValue ? value!.toFixed(0) : '—'}</span>
+        {hasValue && unit ? <span className="text-sm text-gray-500">{unit}</span> : null}
+      </div>
     </div>
   )
 }
@@ -17,7 +22,7 @@ function BigNumber({ label, value }: { label: string; value: number | null }) {
 export default function App() {
   return (
     <div className="min-h-full p-6 space-y-8">
-      <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">CTO Dashboard</h1>
       <LeadCycleBlock />
       <StocksBlock />
       <ThroughputBlock />
@@ -28,9 +33,19 @@ export default function App() {
 function LeadCycleBlock() {
   const { data } = useCycleTimes()
   const points = (data ?? []).map((r) => ({
-    label: r[Object.keys(r).find((k) => k.toLowerCase().includes('year')) || ''] ?? '',
-    lead: parseNumber(r['lead_time'] ?? r['lead'] ?? r['leadtime']),
-    cycle: parseNumber(r['cycle_time'] ?? r['cycle'] ?? r['cycletime']),
+    label: r[
+      Object.keys(r).find((k) => {
+        const lk = k.toLowerCase()
+        return lk.includes('year') || lk.includes('month')
+      }) || ''
+    ] ?? '',
+    // Support multiple possible CSV headers
+    lead: parseNumber(
+      r['leadtime_days_avg'] ?? r['lead_time'] ?? r['lead'] ?? r['leadtime']
+    ),
+    cycle: parseNumber(
+      r['cycletime_days_avg'] ?? r['cycle_time'] ?? r['cycle'] ?? r['cycletime']
+    ),
   }))
   const leadSeries = points.map((p) => p.lead ?? 0)
   const cycleSeries = points.map((p) => p.cycle ?? 0)
@@ -46,8 +61,8 @@ function LeadCycleBlock() {
           </CardHeader>
           <CardContent>
             <div className="flex items-end justify-between">
-              <BigNumber label="Current" value={leadLast} />
               <Sparkline data={leadSeries} width={300} />
+                <BigNumber label="Current" value={leadLast} unit="Days" />
             </div>
           </CardContent>
         </Card>
@@ -57,8 +72,7 @@ function LeadCycleBlock() {
           </CardHeader>
           <CardContent>
             <div className="flex items-end justify-between">
-              <BigNumber label="Current" value={cycleLast} />
-              <Sparkline data={cycleSeries} width={300} />
+              <Sparkline data={cycleSeries} width={300} /><BigNumber label="Current" value={cycleLast} unit="Days" />
             </div>
           </CardContent>
         </Card>
@@ -68,12 +82,55 @@ function LeadCycleBlock() {
 }
 
 function StocksBlock() {
-  const { data } = useStocksWeek()
-  const rows = data ?? []
-  const labels = rows.map((r) => r['year_week'] ?? r['year-week'] ?? r['week'] ?? '')
+  // Use weekly endpoint to build stacked bars per project per week
+  const week = useStocksWeek()
+  const rows = week.data ?? []
 
-  function seriesFor(key: string): Point[] {
-    return rows.map((r) => ({ label: labels[rows.indexOf(r)], value: parseNumber(r[key]) ?? 0 }))
+  // Build ordered unique labels of the form YYYY-WW
+  const labelKey = (r: Record<string, string>) => {
+    const y = r['year'] ?? ''
+    const w = r['week'] ?? (r['year_week'] ?? r['year-week'] ?? r['week'] ?? '')
+    return y && w ? `${y}-W${String(w).padStart(2, '0')}` : String(w)
+  }
+  const labelList: string[] = []
+  const groups = new Map<string, Record<string, string>[]>()
+  for (const r of rows) {
+    const k = labelKey(r)
+    if (!groups.has(k)) {
+      groups.set(k, [])
+      labelList.push(k)
+    }
+    groups.get(k)!.push(r)
+  }
+
+  // Collect project names
+  const projectNames: string[] = Array.from(
+    new Set(
+      rows.map((r) => (r['project_name']?.trim() ? r['project_name'].trim() : 'Unassigned'))
+    )
+  )
+
+  function stacksFor(key: string): { labels: string[]; stacks: StackSeries[] } {
+    const stacks: StackSeries[] = projectNames.map((name) => ({ name, values: Array(labelList.length).fill(0) }))
+    labelList.forEach((lab, idx) => {
+      const rs = groups.get(lab) ?? []
+      // sum value per project for this week label
+      for (const r of rs) {
+        const name = r['project_name']?.trim() ? r['project_name'].trim() : 'Unassigned'
+        const v = parseNumber(r[key]) ?? 0
+        const s = stacks.find((t) => t.name === name)!
+        s.values[idx] += v
+      }
+    })
+    return { labels: labelList, stacks }
+  }
+
+  // Big numbers: use /api/stocks (current snapshot), summed across projects
+  const stocks = useStocks()
+  const sumFor = (key: string): number | null => {
+    const rs = stocks.data ?? []
+    if (!rs.length) return null
+    return rs.reduce((acc, r) => acc + (parseNumber(r[key]) ?? 0), 0)
   }
 
   const items: { key: string; label: string }[] = [
@@ -90,8 +147,8 @@ function StocksBlock() {
       <h2 className="text-xl font-semibold mb-3">Stocks</h2>
       <div className="space-y-4">
         {items.map(({ key, label }) => {
-          const s = seriesFor(key)
-          const last = s.length ? s[s.length - 1].value : null
+          const { labels, stacks } = stacksFor(key)
+          const total = sumFor(key)
           return (
             <Card key={key}>
               <CardHeader>
@@ -100,10 +157,10 @@ function StocksBlock() {
               <CardContent>
                 <div className="grid grid-cols-4 gap-4 items-center">
                   <div className="col-span-3 overflow-x-auto">
-                    <LineChart series={[s]} width={900} height={220} colors={["#000"]} />
+                    <StackedBarChart labels={labels} stacks={stacks} width={900} height={220} />
                   </div>
                   <div className="col-span-1 flex justify-center">
-                    <BigNumber label="Current" value={last} />
+                    <BigNumber label="Current" value={total} unit="Issues" />
                   </div>
                 </div>
               </CardContent>
