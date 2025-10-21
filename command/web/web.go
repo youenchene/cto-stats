@@ -11,22 +11,27 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// Run starts a small Echo web server exposing CSV-as-JSON APIs.
+// Run starts a small Echo web server exposing CSV-as-JSON APIs and an optional SPA dashboard.
 //
 // Usage:
 //
-//	github-stats web [-addr :8080] [-data ./data]
+//	github-stats web [-addr :8080] [-data ./data] [-ui ./ui/dist]
 //
 // Endpoints:
 //
 //	GET /api/cycle_times          -> <data>/cycle_time.csv
 //	GET /api/stocks               -> <data>/stocks.csv
 //	GET /api/stocks/week          -> <data>/stocks_week.csv
+//	GET /api/throughtput/week     -> <data>/throughput_week.csv (404 if missing)
 //	GET /api/throughtput/month    -> <data>/throughput_month.csv (404 if missing)
+//
+// When -ui points to a built Vite app (index.html exists), static files are served at / and
+// unknown routes fall back to index.html for SPA routing.
 func Run(args []string) error {
 	fs := flag.NewFlagSet("web", flag.ContinueOnError)
 	addr := fs.String("addr", ":8080", "http listen address (host:port)")
 	dataDir := fs.String("data", "./data", "directory containing CSV files")
+	uiDir := fs.String("ui", "./ui/dist", "directory containing built UI (Vite dist)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -56,10 +61,29 @@ func Run(args []string) error {
 		})
 	}
 
+	// APIs
 	serveCSV("/api/cycle_times", "cycle_time.csv")
 	serveCSV("/api/stocks", "stocks.csv")
 	serveCSV("/api/stocks/week", "stocks_week.csv")
+	serveCSV("/api/throughtput/week", "throughput_week.csv")
 	serveCSV("/api/throughtput/month", "throughput_month.csv")
+
+	// Static UI (optional)
+	indexPath := filepath.Join(*uiDir, "index.html")
+	if fi, err := os.Stat(indexPath); err == nil && !fi.IsDir() {
+		// Serve assets under /
+		e.Static("/", *uiDir)
+		// Root path -> index.html
+		e.GET("/", func(c echo.Context) error { return c.File(indexPath) })
+		// Catch-all for SPA (excluding API): always return index.html
+		e.GET("/*", func(c echo.Context) error {
+			p := c.Request().URL.Path
+			if len(p) >= 4 && p[:4] == "/api" {
+				return echo.NewHTTPError(http.StatusNotFound, "not found")
+			}
+			return c.File(indexPath)
+		})
+	}
 
 	return e.Start(*addr)
 }
