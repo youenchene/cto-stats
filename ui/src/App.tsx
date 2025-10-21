@@ -1,10 +1,11 @@
 import React from 'react'
-import { useCycleTimes, useStocks, useStocksWeek, useThroughputMonth, useThroughputWeek } from './api'
+import { useCycleTimes, useStocks, useStocksWeek, useThroughputWeek } from './api'
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card'
 import { Sparkline } from './components/Sparkline'
 import { LineChart, Point } from './components/LineChart'
 import { StackedBarChart, StackSeries } from './components/StackedBarChart'
 import { parseNumber } from './lib/utils'
+import { useTranslation } from 'react-i18next'
 
 function BigNumber({ label, value, unit }: { label: string; value: number | null; unit?: string }) {
   const hasValue = value != null
@@ -20,9 +21,10 @@ function BigNumber({ label, value, unit }: { label: string; value: number | null
 }
 
 export default function App() {
+  const { t } = useTranslation()
   return (
     <div className="min-h-full p-6 space-y-8">
-      <h1 className="text-2xl font-semibold tracking-tight">CTO Dashboard</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">{t('common.appTitle')}</h1>
       <LeadCycleBlock />
       <StocksBlock />
       <ThroughputBlock />
@@ -31,6 +33,7 @@ export default function App() {
 }
 
 function LeadCycleBlock() {
+  const { t } = useTranslation()
   const { data } = useCycleTimes()
   const points = (data ?? []).map((r) => ({
     label: r[
@@ -53,26 +56,26 @@ function LeadCycleBlock() {
   const cycleLast = points.length ? points[points.length - 1].cycle : null
   return (
     <section>
-      <h2 className="text-xl font-semibold mb-3">Lead & Cycle Times</h2>
+      <h2 className="text-xl font-semibold mb-3">{t('leadCycle.sectionTitle')}</h2>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card>
           <CardHeader>
-            <CardTitle>Lead Time (days)</CardTitle>
+            <CardTitle>{t('leadCycle.leadCardTitle')}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex items-end justify-between">
               <Sparkline data={leadSeries} width={300} />
-                <BigNumber label="Current" value={leadLast} unit="Days" />
+                <BigNumber label={t('common.current')} value={leadLast} unit={t('units.days')} />
             </div>
           </CardContent>
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Cycle Time (days)</CardTitle>
+            <CardTitle>{t('leadCycle.cycleCardTitle')}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex items-end justify-between">
-              <Sparkline data={cycleSeries} width={300} /><BigNumber label="Current" value={cycleLast} unit="Days" />
+              <Sparkline data={cycleSeries} width={300} /><BigNumber label={t('common.current')} value={cycleLast} unit={t('units.days')} />
             </div>
           </CardContent>
         </Card>
@@ -82,6 +85,7 @@ function LeadCycleBlock() {
 }
 
 function StocksBlock() {
+  const { t } = useTranslation()
   // Use weekly endpoint to build stacked bars per project per week
   const week = useStocksWeek()
   const rows = week.data ?? []
@@ -106,7 +110,7 @@ function StocksBlock() {
   // Collect project names
   const projectNames: string[] = Array.from(
     new Set(
-      rows.map((r) => (r['project_name']?.trim() ? r['project_name'].trim() : 'Unassigned'))
+      rows.map((r) => (r['project_name']?.trim() ? r['project_name'].trim() : t('stocks.unassigned')))
     )
   )
 
@@ -116,9 +120,9 @@ function StocksBlock() {
       const rs = groups.get(lab) ?? []
       // sum value per project for this week label
       for (const r of rs) {
-        const name = r['project_name']?.trim() ? r['project_name'].trim() : 'Unassigned'
+        const name = r['project_name']?.trim() ? r['project_name'].trim() : t('stocks.unassigned')
         const v = parseNumber(r[key]) ?? 0
-        const s = stacks.find((t) => t.name === name)!
+        const s = stacks.find((t0) => t0.name === name)!
         s.values[idx] += v
       }
     })
@@ -133,34 +137,44 @@ function StocksBlock() {
     return rs.reduce((acc, r) => acc + (parseNumber(r[key]) ?? 0), 0)
   }
 
-  const items: { key: string; label: string }[] = [
-    { key: 'opened_bugs', label: 'Red bin (opened_bugs)' },
-    { key: 'waiting_to_prod', label: 'waiting_to_prod' },
-    { key: 'in_review', label: 'in_review' },
-    { key: 'in_qa', label: 'in_qa' },
-    { key: 'in_dev', label: 'in_dev' },
-    { key: 'in_backlogs', label: 'in_backlogs' },
+  const items: { key: string; labelKey: string }[] = [
+    { key: 'opened_bugs', labelKey: 'opened_bugs' },
+    { key: 'waiting_to_prod', labelKey: 'waiting_to_prod' },
+    { key: 'in_review', labelKey: 'in_review' },
+    { key: 'in_qa', labelKey: 'in_qa' },
+    { key: 'in_dev', labelKey: 'in_dev' },
+    { key: 'in_backlogs', labelKey: 'in_backlogs' },
   ]
 
   return (
     <section>
-      <h2 className="text-xl font-semibold mb-3">Stocks</h2>
+      <h2 className="text-xl font-semibold mb-3">{t('stocks.sectionTitle')}</h2>
       <div className="space-y-4">
-        {items.map(({ key, label }) => {
+        {items.map(({ key, labelKey }) => {
           const { labels, stacks } = stacksFor(key)
           const total = sumFor(key)
           return (
             <Card key={key}>
               <CardHeader>
-                <CardTitle>{label}</CardTitle>
+                <CardTitle>{t(`stocks.labels.${labelKey}`)}</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-4 gap-4 items-center">
-                  <div className="col-span-3 overflow-x-auto">
+                  <div
+                    className="col-span-3 overflow-x-auto"
+                    ref={(el) => {
+                      if (el) {
+                        // Scroll to the far right when the element mounts or updates
+                        requestAnimationFrame(() => {
+                          ;(el as HTMLDivElement).scrollLeft = el.scrollWidth
+                        })
+                      }
+                    }}
+                  >
                     <StackedBarChart labels={labels} stacks={stacks} width={900} height={220} />
                   </div>
                   <div className="col-span-1 flex justify-center">
-                    <BigNumber label="Current" value={total} unit="Issues" />
+                    <BigNumber label={t('common.current')} value={total} unit={t('units.issues')} />
                   </div>
                 </div>
               </CardContent>
@@ -173,11 +187,22 @@ function StocksBlock() {
 }
 
 function ThroughputBlock() {
-  const month = useThroughputMonth()
-  const week = useThroughputWeek()
+  const { t } = useTranslation()
+  const query = useThroughputWeek()
 
-  const data = month.data?.length ? month.data : week.data ?? []
-  const labels = data.map((r) => r['year_week'] ?? r['year-month'] ?? r['year_month'] ?? '')
+  const data = query.data ?? []
+  const labels = data.map((r) => {
+    const y = r['year']
+    const w = r['week']
+    if (y && w) return `${y}-W${String(w).padStart(2, '0')}`
+    return (
+      r['year_week'] ??
+      r['year-week'] ??
+      r['year-month'] ??
+      r['year_month'] ??
+      (w ? String(w) : '')
+    )
+  })
 
   const main: Point[] = data.map((r, i) => ({ label: labels[i], value: parseNumber(r['throughput'] ?? r['main'] ?? r['value']) ?? 0 }))
   const lcl: Point[] = data.map((r, i) => ({ label: labels[i], value: parseNumber(r['lcl']) ?? 0 }))
@@ -185,10 +210,10 @@ function ThroughputBlock() {
 
   return (
     <section>
-      <h2 className="text-xl font-semibold mb-3">Throughput</h2>
+      <h2 className="text-xl font-semibold mb-3">{t('throughput.sectionTitle')}</h2>
       <Card>
         <CardContent>
-          <LineChart series={[main, lcl, ucl]} width={1100} height={260} colors={["#000", "#9ca3af", "#9ca3af"]} />
+          <LineChart series={[main, lcl, ucl]} width={1100} height={260} colors={["#000", "#9ca3af", "#9ca3af"]} xTickCount={5} />
         </CardContent>
       </Card>
     </section>

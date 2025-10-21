@@ -24,7 +24,6 @@ import (
 //	GET /api/stocks               -> <data>/stocks.csv
 //	GET /api/stocks/week          -> <data>/stocks_week.csv
 //	GET /api/throughtput/week     -> <data>/throughput_week.csv (404 if missing)
-//	GET /api/throughtput/month    -> <data>/throughput_month.csv (404 if missing)
 //
 // When -ui points to a built Vite app (index.html exists), static files are served at / and
 // unknown routes fall back to index.html for SPA routing.
@@ -66,8 +65,7 @@ func Run(args []string) error {
 	serveCSV("/api/cycle_times", "cycle_time.csv")
 	serveCSV("/api/stocks", "stocks.csv")
 	serveCSV("/api/stocks/week", "stocks_week.csv")
-	serveCSV("/api/throughtput/week", "throughput_week.csv")
-	serveCSV("/api/throughtput/month", "throughput_month.csv")
+	serveCSV("/api/throughput/week", "throughput_week.csv")
 
 	// Static UI (optional)
 	indexPath := filepath.Join(*uiDir, "index.html")

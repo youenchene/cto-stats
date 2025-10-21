@@ -29,20 +29,10 @@ export function useStocks() {
   })
 }
 
-export function useThroughputMonth() {
-  return useQuery<Row[]>({
-    queryKey: ['throughput_month'],
-    queryFn: () => fetchJSON('/api/throughtput/month'),
-    retry: (failureCount, error: any) => {
-      // If endpoint missing (404), don't retry endlessly
-      return !(error?.message?.startsWith?.('404')) && failureCount < 2
-    }
-  })
-}
 
 export function useThroughputWeek() {
   return useQuery<Row[]>({
     queryKey: ['throughput_week'],
-    queryFn: () => fetchJSON('/api/throughtput/week'),
+    queryFn: () => fetchJSON('/api/throughput/week'),
   })
 }
