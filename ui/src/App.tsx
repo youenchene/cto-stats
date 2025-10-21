@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useCycleTimes, useStocks, useStocksWeek, useThroughputWeek } from './api'
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card'
 import { Sparkline } from './components/Sparkline'
@@ -208,12 +208,31 @@ function ThroughputBlock() {
   const lcl: Point[] = data.map((r, i) => ({ label: labels[i], value: parseNumber(r['lcl']) ?? 0 }))
   const ucl: Point[] = data.map((r, i) => ({ label: labels[i], value: parseNumber(r['ucl']) ?? 0 }))
 
+  // Responsive width: measure container width and update on resize
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [containerWidth, setContainerWidth] = useState<number>(800)
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const update = () => setContainerWidth(el.clientWidth)
+    update()
+    const ro = new ResizeObserver(() => update())
+    ro.observe(el)
+    window.addEventListener('resize', update)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', update)
+    }
+  }, [])
+
   return (
     <section>
       <h2 className="text-xl font-semibold mb-3">{t('throughput.sectionTitle')}</h2>
       <Card>
         <CardContent>
-          <LineChart series={[main, lcl, ucl]} width={1100} height={260} colors={["#000", "#9ca3af", "#9ca3af"]} xTickCount={5} />
+          <div ref={containerRef} className="w-full">
+            <LineChart series={[main, lcl, ucl]} width={Math.max(320, containerWidth)} height={260} colors={["#000", "#9ca3af", "#9ca3af"]} xTickCount={5} />
+          </div>
         </CardContent>
       </Card>
     </section>

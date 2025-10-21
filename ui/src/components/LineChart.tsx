@@ -84,6 +84,35 @@ export function LineChart({
       )}
       {/* series paths */}
       {paths}
+      {/* out-of-control markers: when main > UCL or main < LCL */}
+      {series.length >= 3 && (
+        <g>
+          {Array.from({ length: Math.max(...series.map((s) => s.length)) }, (_, i) => {
+            const mainVal = series[0]?.[i]?.value
+            const lclVal = series[1]?.[i]?.value
+            const uclVal = series[2]?.[i]?.value
+            if (
+              Number.isFinite(mainVal) &&
+              Number.isFinite(lclVal) &&
+              Number.isFinite(uclVal) &&
+              (mainVal! > uclVal! || mainVal! < lclVal!)
+            ) {
+              return (
+                <circle
+                  key={i}
+                  cx={x(i)}
+                  cy={y(mainVal!)}
+                  r={5.2}
+                  fill="none"
+                  stroke="#ff0000"
+                  strokeWidth={2}
+                />
+              )
+            }
+            return null
+          })}
+        </g>
+      )}
     </svg>
   )
 }

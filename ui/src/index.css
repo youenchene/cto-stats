@@ -20,5 +20,10 @@ body {
 }
 
 .chart-grayscale {
-  filter: grayscale(100%);
+  /* Disable grayscale so highlighted elements (e.g., red markers) keep their color */
+  filter: none;
+}
+
+:root {
+  --red: #ff0000;
 }
