@@ -1,3 +1,5 @@
 data/
 *.iml
 .idea/
+ui/dist/
+ui/node_modules/

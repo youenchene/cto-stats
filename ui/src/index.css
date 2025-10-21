@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+
+/* Simple grayscale theme accents */
+:root {
+  --bg: #ffffff;
+  --fg: #000000;
+  --muted: #e5e7eb; /* gray-200 */
+  --muted-2: #9ca3af; /* gray-400 */
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.chart-grayscale {
+  filter: grayscale(100%);
+}
