@@ -1,15 +1,17 @@
 # GitHub Stats (cto-stats)
 
-A minimal toolkit to generate a statistic web dashboard about **the productivity of a software organization**.
+A minimal toolkit to generate a statistic web dashboard about **the productivity of a software organization**. 
+
+It allows you to see how the organization (the system) is **behaving** and help to identify **bottlenecks** in the **system**.
 
 The generated KPI are : 
  - **Lead time** and **cycle time** trend
- - **Stocks** per week : ***Red Bin** for bug and stocks per development process steps.
+ - **Stocks** per week : **Red Bin** for bug and **stocks** per **development process steps**.
  - **Statistics controlled** weekly **throughput** (issues closed per week)
 
 Current sources are :
- - github issues of an organization
- - github projects of an organization
+ - github issues of a github organization.
+ - github projects of a github organization.
 
 
 The tools is a CLI with three subcommands :
@@ -18,6 +20,7 @@ The tools is a CLI with three subcommands :
   - **web**: launch web dashboard.
 
 [View full size image](docs/screen-v0.1.png)
+
 ![Dashboard screenshot](docs/screen-v0.1-tn.png)
 
 ## How to run - user mode
@@ -99,4 +102,3 @@ Available API endpoints :
 - GET /api/stocks → data/stocks.csv
 - GET /api/stocks/week → data/stocks_week.csv
 - GET /api/throughput/week → data/throughput_week.csv
-
