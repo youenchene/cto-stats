@@ -1,4 +1,4 @@
-# GitHub Stats (cto-stats)
+# CTO Stats
 
 A minimal toolkit to generate a statistic web dashboard about **the productivity of a software organization**. 
 
