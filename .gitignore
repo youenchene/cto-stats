@@ -3,3 +3,4 @@ data/
 .idea/
 ui/dist/
 ui/node_modules/
+config.yml

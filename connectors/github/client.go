@@ -192,6 +192,7 @@ func (hc *Client) ListAllIssues(ctx context.Context, owner, repo, since string) 
         author{login}
         assignees(first:20){nodes{login}}
         labels(first:50){nodes{name}}
+        issueType { name }
       }
     }
   }
@@ -242,6 +243,9 @@ func (hc *Client) ListAllIssues(ctx context.Context, owner, repo, since string) 
 									Name string `json:"name"`
 								}
 							} `json:"labels"`
+							IssueType *struct {
+								Name string `json:"name"`
+							} `json:"issueType"`
 						} `json:"nodes"`
 					} `json:"issues"`
 				} `json:"repository"`
@@ -273,6 +277,9 @@ func (hc *Client) ListAllIssues(ctx context.Context, owner, repo, since string) 
 			}
 			for _, l := range n.Labels.Nodes {
 				iss.Labels = append(iss.Labels, gh.Label{Name: l.Name})
+			}
+			if n.IssueType != nil {
+				iss.Type = strings.ToLower(strings.TrimSpace(n.IssueType.Name))
 			}
 			all = append(all, iss)
 		}

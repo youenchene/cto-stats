@@ -3,6 +3,7 @@ package calculate
 import (
 	"encoding/csv"
 	"errors"
+	"flag"
 	"fmt"
 	"math"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"cto-stats/connectors/config"
 
 	lo "github.com/samber/lo"
 )
@@ -21,6 +24,7 @@ type issueRow struct {
 	Repo      string
 	Number    string
 	Title     string
+	Type      string
 	IsBug     bool
 	CreatedAt time.Time
 }
@@ -60,12 +64,32 @@ type calculatedIssue struct {
 	WaitingToPodStartDatetime *time.Time
 	EndDatetime               *time.Time
 	Bug                       bool
+	Type                      string
 }
 
-// Run executes the calculate command (no extra args expected)
+// Run executes the calculate command
 func Run(args []string) error {
-	if len(args) != 0 {
-		return fmt.Errorf("calculate: no arguments expected")
+	fs := flag.NewFlagSet("calculate", flag.ContinueOnError)
+	configPath := fs.String("config", "", "Path to YAML config file (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfgPath := *configPath
+	if cfgPath == "" {
+		cfgPath = "./config.yml"
+	}
+	// For calculate, a config file is required
+	if _, err := os.Stat(cfgPath); err != nil {
+		return fmt.Errorf("calculate: config file required at -config (default ./config.yml): %w", err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("calculate: failed to load config: %w", err)
+	}
+	// Build a project lookup by ID for quick access
+	projCfgByID := map[string]config.Project{}
+	for _, p := range cfg.GitHub.Projects {
+		projCfgByID[p.ID] = p
 	}
 
 	// Read inputs from data/
@@ -86,32 +110,91 @@ func Run(args []string) error {
 	// Build output
 	var out []calculatedIssue
 	for id, is := range issues {
-		proj := projByID[id]
+		projEvents := projByID[id]
 		st := statusByID[id]
+
 		row := calculatedIssue{
 			ID:               id,
 			Name:             is.Title,
 			CreationDatetime: is.CreatedAt,
 			Bug:              is.IsBug,
+			Type:             is.Type,
 		}
-		if len(proj) > 0 {
-			row.ProjectID = proj[0].ProjectID
-			row.ProjectName = proj[0].ProjectName
+		// Determine project on first project event if any
+		var pid, pname string
+		if len(projEvents) > 0 {
+			pid = projEvents[0].ProjectID
+			pname = projEvents[0].ProjectName
+			row.ProjectID = pid
+			row.ProjectName = pname
 		}
-		row.LeadTimeStartDatetime = firstMoveToAny(proj, []string{"Backlog", "Ready"})
-		row.CycleTimeStartDatetime = firstMoveToAny(proj, []string{"In Progress", "In progress"})
-		if row.CycleTimeStartDatetime == nil {
-			row.CycleTimeStartDatetime = firstMoveToAny(proj, []string{"Backlog", "Ready"})
+		// Apply config filters if project known and present in config
+		if pc, ok := projCfgByID[pid]; ok {
+			if pc.Exclude {
+				continue
+			}
+			if len(pc.Types) > 0 {
+				// case-insensitive compare
+				allowed := false
+				for _, t := range pc.Types {
+					if strings.EqualFold(strings.TrimSpace(t), strings.TrimSpace(is.Type)) {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					continue
+				}
+			}
+			// Use configured columns for stage timestamps
+			choose := func(cols []string, fallback []string) *time.Time {
+				if len(cols) > 0 {
+					return firstMoveToAny(projEvents, cols)
+				}
+				if len(fallback) > 0 {
+					return firstMoveToAny(projEvents, fallback)
+				}
+				return nil
+			}
+			row.LeadTimeStartDatetime = choose(pc.LeadTimeColumns, []string{"Backlog", "Ready"})
+			row.CycleTimeStartDatetime = choose(pc.CycleTimeColumns, []string{"In Progress", "In progress"})
+			if row.CycleTimeStartDatetime == nil {
+				row.CycleTimeStartDatetime = row.LeadTimeStartDatetime
+			}
+			row.DevStartDatetime = choose(pc.DevStartColumns, []string{"In Progress", "In progress"})
+			if row.DevStartDatetime == nil {
+				row.DevStartDatetime = row.LeadTimeStartDatetime
+			}
+			row.ReviewStartDatetime = choose(pc.ReviewStartColumns, []string{"In review", "In Review"})
+			row.QAStartDatetime = choose(pc.QAStartColumns, nil)
+			row.WaitingToPodStartDatetime = choose(pc.WaitingToProdStartCols, []string{"Done"})
+			// End datetime: by default earliest of status closed and configured inprod columns (e.g., Archive/Done)
+			var endCandidates []*time.Time
+			if e := choose(pc.InProdStartColumns, []string{"Archive"}); e != nil {
+				endCandidates = append(endCandidates, e)
+			}
+			// closed status
+			if ev, ok := lo.Find(st, func(s statusEventRow) bool { return s.Type == "closed" }); ok {
+				end := ev.At
+				endCandidates = append(endCandidates, &end)
+			}
+			row.EndDatetime = earliest(endCandidates)
+		} else {
+			// No matching project in config: fallback to legacy behavior
+			row.LeadTimeStartDatetime = firstMoveToAny(projEvents, []string{"Backlog", "Ready"})
+			row.CycleTimeStartDatetime = firstMoveToAny(projEvents, []string{"In Progress", "In progress"})
+			if row.CycleTimeStartDatetime == nil {
+				row.CycleTimeStartDatetime = firstMoveToAny(projEvents, []string{"Backlog", "Ready"})
+			}
+			row.DevStartDatetime = firstMoveToAny(projEvents, []string{"In Progress", "In progress"})
+			if row.DevStartDatetime == nil {
+				row.DevStartDatetime = firstMoveToAny(projEvents, []string{"Backlog", "Ready"})
+			}
+			row.ReviewStartDatetime = firstMoveToAny(projEvents, []string{"In review", "In Review"})
+			row.QAStartDatetime = nil
+			row.WaitingToPodStartDatetime = firstMoveTo(projEvents, "Done")
+			row.EndDatetime = computeEnd(st, projEvents)
 		}
-		row.DevStartDatetime = firstMoveToAny(proj, []string{"In Progress", "In progress"})
-		if row.DevStartDatetime == nil {
-			row.DevStartDatetime = firstMoveToAny(proj, []string{"Backlog", "Ready"})
-		}
-		row.ReviewStartDatetime = firstMoveToAny(proj, []string{"In review", "In Review"})
-		// No rule yet
-		row.QAStartDatetime = nil
-		row.WaitingToPodStartDatetime = firstMoveTo(proj, "Done")
-		row.EndDatetime = computeEnd(st, proj)
 
 		out = append(out, row)
 	}
@@ -160,14 +243,17 @@ func readIssues(path string) (map[string]issueRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Expect headers: org,repo,number,title,url,state,is_bug,creator,assignees,created_at,closed_at,committer
+	// Expect headers: org,repo,number,title,url,state,type,is_bug,creator,assignees,created_at,closed_at,committer
 	idx := indexMap(rec)
-	required := []string{"org", "repo", "number", "title", "is_bug", "created_at"}
+	required := []string{"org", "repo", "number", "title", "created_at"}
 	for _, col := range required {
 		if _, ok := idx[col]; !ok {
 			return nil, fmt.Errorf("issue.csv missing column %s", col)
 		}
 	}
+	// Optional columns for backward compatibility
+	_, hasType := idx["type"]
+	_, hasIsBug := idx["is_bug"]
 
 	res := map[string]issueRow{}
 	for {
@@ -188,9 +274,16 @@ func readIssues(path string) (map[string]issueRow, error) {
 		repo := rec[idx["repo"]]
 		num := rec[idx["number"]]
 		title := rec[idx["title"]]
-		isBug := parseBool(rec[idx["is_bug"]])
+		typeVal := ""
+		if hasType {
+			typeVal = rec[idx["type"]]
+		}
+		isBug := false
+		if hasIsBug {
+			isBug = parseBool(rec[idx["is_bug"]])
+		}
 		created, _ := time.Parse(time.RFC3339, rec[idx["created_at"]])
-		res[key(org, repo, num)] = issueRow{Org: org, Repo: repo, Number: num, Title: title, IsBug: isBug, CreatedAt: created}
+		res[key(org, repo, num)] = issueRow{Org: org, Repo: repo, Number: num, Title: title, Type: typeVal, IsBug: isBug, CreatedAt: created}
 	}
 	return res, nil
 }
@@ -352,6 +445,21 @@ func equalFoldTrim(a, b string) bool {
 	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
+// earliest returns the earliest non-nil time among candidates, or nil if none.
+func earliest(ts []*time.Time) *time.Time {
+	var res *time.Time
+	for _, t := range ts {
+		if t == nil {
+			continue
+		}
+		if res == nil || t.Before(*res) {
+			tt := *t
+			res = &tt
+		}
+	}
+	return res
+}
+
 func writeOutput(path string, rows []calculatedIssue) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -363,7 +471,7 @@ func writeOutput(path string, rows []calculatedIssue) error {
 	defer f.Close()
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	headers := []string{"id", "name", "project_id", "project_name", "creationdatetime", "leadtimestartdatetime", "cycletimestartdatetime", "devstartdatetime", "reviewstartdatetime", "qastartdatetime", "waitingtopodstartdateime", "enddatetime", "bug"}
+	headers := []string{"id", "name", "project_id", "project_name", "creationdatetime", "leadtimestartdatetime", "cycletimestartdatetime", "devstartdatetime", "reviewstartdatetime", "qastartdatetime", "waitingtopodstartdateime", "enddatetime", "bug", "type"}
 	if err := w.Write(headers); err != nil {
 		return err
 	}
@@ -382,6 +490,7 @@ func writeOutput(path string, rows []calculatedIssue) error {
 			formatTime(r.WaitingToPodStartDatetime),
 			formatTime(r.EndDatetime),
 			fmt.Sprintf("%t", r.Bug),
+			r.Type,
 		}
 		if err := w.Write(row); err != nil {
 			return err

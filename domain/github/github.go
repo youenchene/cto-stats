@@ -23,6 +23,7 @@ type Issue struct {
 	User        *User      `json:"user"`
 	Assignees   []User     `json:"assignees"`
 	Labels      []Label    `json:"labels"`
+	Type        string     `json:"type"`
 	PullRequest *struct{}  `json:"pull_request"`
 }
 
@@ -85,6 +86,7 @@ type IssueReport struct {
 	Title           string             `json:"title"`
 	URL             string             `json:"url"`
 	State           string             `json:"state"`
+	Type            string             `json:"type,omitempty"`
 	IsBug           bool               `json:"is_bug"`
 	Creator         string             `json:"creator"`
 	Assignees       []string           `json:"assignees"`
