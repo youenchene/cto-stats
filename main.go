@@ -6,6 +6,7 @@ import (
 	cmdweb "cto-stats/command/web"
 	gh "cto-stats/domain/github"
 	"fmt"
+	"log/slog"
 	"os"
 )
 
@@ -40,6 +41,10 @@ type CurrentProject = gh.CurrentProject
 
 func main() {
 	args := os.Args
+	// Initialize slog logger (text to stderr, DEBUG level for now)
+	h := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})
+	slog.SetDefault(slog.New(h))
+
 	if len(args) > 1 {
 		sub := args[1]
 		rest := append([]string{}, args[2:]...)

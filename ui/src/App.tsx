@@ -140,8 +140,8 @@ function StocksBlock() {
   const items: { key: string; labelKey: string }[] = [
     { key: 'opened_bugs', labelKey: 'opened_bugs' },
     { key: 'waiting_to_prod', labelKey: 'waiting_to_prod' },
+      { key: 'in_qa', labelKey: 'in_qa' },
     { key: 'in_review', labelKey: 'in_review' },
-    { key: 'in_qa', labelKey: 'in_qa' },
     { key: 'in_dev', labelKey: 'in_dev' },
     { key: 'in_backlogs', labelKey: 'in_backlogs' },
   ]

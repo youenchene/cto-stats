@@ -47,10 +47,6 @@ func Run(args []string) error {
 		return err
 	}
 
-	// Initialize slog logger (text to stderr, DEBUG level for now)
-	h := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})
-	slog.SetDefault(slog.New(h))
-
 	// Resolve config and org
 	cfgPath := *configPath
 	if cfgPath == "" {

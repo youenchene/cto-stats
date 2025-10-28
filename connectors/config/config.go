@@ -2,7 +2,9 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"io/ioutil"
+	"log/slog"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -45,5 +47,6 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(b, &c); err != nil {
 		return nil, err
 	}
+	slog.Info(fmt.Sprintf("Loaded config: %s", path))
 	return &c, nil
 }

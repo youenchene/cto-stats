@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -65,6 +66,7 @@ type calculatedIssue struct {
 	EndDatetime               *time.Time
 	Bug                       bool
 	Type                      string
+	CurrentColumn             string
 }
 
 // Run executes the calculate command
@@ -108,7 +110,7 @@ func Run(args []string) error {
 	}
 
 	// Build output
-	var out []calculatedIssue
+	var allIssues []calculatedIssue
 	for id, is := range issues {
 		projEvents := projByID[id]
 		st := statusByID[id]
@@ -147,30 +149,22 @@ func Run(args []string) error {
 				}
 			}
 			// Use configured columns for stage timestamps
-			choose := func(cols []string, fallback []string) *time.Time {
+			choose := func(cols []string) *time.Time {
 				if len(cols) > 0 {
 					return firstMoveToAny(projEvents, cols)
 				}
-				if len(fallback) > 0 {
-					return firstMoveToAny(projEvents, fallback)
-				}
 				return nil
 			}
-			row.LeadTimeStartDatetime = choose(pc.LeadTimeColumns, []string{"Backlog", "Ready"})
-			row.CycleTimeStartDatetime = choose(pc.CycleTimeColumns, []string{"In Progress", "In progress"})
-			if row.CycleTimeStartDatetime == nil {
-				row.CycleTimeStartDatetime = row.LeadTimeStartDatetime
-			}
-			row.DevStartDatetime = choose(pc.DevStartColumns, []string{"In Progress", "In progress"})
-			if row.DevStartDatetime == nil {
-				row.DevStartDatetime = row.LeadTimeStartDatetime
-			}
-			row.ReviewStartDatetime = choose(pc.ReviewStartColumns, []string{"In review", "In Review"})
-			row.QAStartDatetime = choose(pc.QAStartColumns, nil)
-			row.WaitingToPodStartDatetime = choose(pc.WaitingToProdStartCols, []string{"Done"})
+			row.LeadTimeStartDatetime = choose(pc.LeadTimeColumns)
+			row.CycleTimeStartDatetime = choose(pc.CycleTimeColumns)
+
+			row.DevStartDatetime = choose(pc.DevStartColumns)
+			row.ReviewStartDatetime = choose(pc.ReviewStartColumns)
+			row.QAStartDatetime = choose(pc.QAStartColumns)
+			row.WaitingToPodStartDatetime = choose(pc.WaitingToProdStartCols)
 			// End datetime: by default earliest of status closed and configured inprod columns (e.g., Archive/Done)
 			var endCandidates []*time.Time
-			if e := choose(pc.InProdStartColumns, []string{"Archive"}); e != nil {
+			if e := choose(pc.InProdStartColumns); e != nil {
 				endCandidates = append(endCandidates, e)
 			}
 			// closed status
@@ -179,7 +173,16 @@ func Run(args []string) error {
 				endCandidates = append(endCandidates, &end)
 			}
 			row.EndDatetime = earliest(endCandidates)
+			if row.EndDatetime != nil {
+				if row.CycleTimeStartDatetime == nil {
+					row.CycleTimeStartDatetime = row.LeadTimeStartDatetime
+				}
+				if row.DevStartDatetime == nil {
+					row.DevStartDatetime = row.LeadTimeStartDatetime
+				}
+			}
 		} else {
+			slog.Info("calculate.project_unknown", "issue_id", id, "id", pid, "name", pname, "type", is.Type, "events", projEvents, "status", st)
 			// No matching project in config: fallback to legacy behavior
 			row.LeadTimeStartDatetime = firstMoveToAny(projEvents, []string{"Backlog", "Ready"})
 			row.CycleTimeStartDatetime = firstMoveToAny(projEvents, []string{"In Progress", "In progress"})
@@ -196,37 +199,41 @@ func Run(args []string) error {
 			row.EndDatetime = computeEnd(st, projEvents)
 		}
 
-		out = append(out, row)
+		allIssues = append(allIssues, row)
 	}
 
 	// Deterministic order
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	sort.Slice(allIssues, func(i, j int) bool { return allIssues[i].ID < allIssues[j].ID })
 
-	if err := writeOutput(filepath.Join(base, "calculated_issue.csv"), out); err != nil {
+	// Build convenience slices using lo
+	closedIssues := lo.Filter(allIssues, func(ci calculatedIssue, _ int) bool { return ci.EndDatetime != nil })
+	openIssues := lo.Filter(allIssues, func(ci calculatedIssue, _ int) bool { return ci.EndDatetime == nil })
+
+	if err := writeOutput(filepath.Join(base, "calculated_issue.csv"), allIssues); err != nil {
 		return err
 	}
 
 	// Step 2: calculate monthly lead time and cycle time in days, using all issues with an EndDatetime
-	if err := writeMonthlyCycleSummary(filepath.Join(base, "cycle_time.csv"), out); err != nil {
+	if err := writeMonthlyCycleSummary(filepath.Join(base, "cycle_time.csv"), closedIssues); err != nil {
 		return err
 	}
 
 	// Step 3: weekly throughput with Shewhart control limits (c-chart)
-	if err := writeWeeklyThroughput(filepath.Join(base, "throughput_week.csv"), out); err != nil {
+	if err := writeWeeklyThroughput(filepath.Join(base, "throughput_week.csv"), closedIssues); err != nil {
 		return err
 	}
 
 	// Step 4: current stocks for not-closed issues by stage
-	if err := writeStocks(filepath.Join(base, "stocks.csv"), out); err != nil {
+	if err := writeStocks(filepath.Join(base, "stocks.csv"), openIssues); err != nil {
 		return err
 	}
 
 	// Step 5: weekly stocks per project by ISO year-week (cutoff at Sunday 23:59:59 UTC)
-	if err := writeWeeklyStocks(filepath.Join(base, "stocks_week.csv"), out); err != nil {
+	if err := writeWeeklyStocks(filepath.Join(base, "stocks_week.csv"), openIssues); err != nil {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "calculate.done count=%d\n", len(out))
+	slog.Info(fmt.Sprintf("calculate.done count=%d countClosed=%d count Open=%d", len(allIssues), len(closedIssues), len(openIssues)))
 	return nil
 }
 

@@ -1,13 +1,5 @@
 package config
 
-import (
-	"errors"
-	"io/ioutil"
-	"os"
-
-	"gopkg.in/yaml.v3"
-)
-
 // Config represents the structure of config.yaml used by the tool.
 // Only the fields currently needed by commands are modeled.
 type Config struct {
@@ -30,20 +22,4 @@ type Project struct {
 	QAStartColumns         []string `yaml:"qa_start_columns"`
 	WaitingToProdStartCols []string `yaml:"waitingtoprod_start_columns"`
 	InProdStartColumns     []string `yaml:"inprod_start_columns"`
-}
-
-// Load parses the YAML configuration file at path.
-func Load(path string) (*Config, error) {
-	b, err := ioutil.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-		return nil, err
-	}
-	var c Config
-	if err := yaml.Unmarshal(b, &c); err != nil {
-		return nil, err
-	}
-	return &c, nil
 }
