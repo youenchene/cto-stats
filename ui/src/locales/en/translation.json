@@ -10,7 +10,8 @@
   "leadCycle": {
     "sectionTitle": "Lead & Cycle Times",
     "leadCardTitle": "Lead Time (days)",
-    "cycleCardTitle": "Cycle Time (days)"
+    "cycleCardTitle": "Cycle Time (days)",
+    "timeToPRCardTitle": "Time to PR (days)"
   },
   "stocks": {
     "sectionTitle": "Stocks",

@@ -531,6 +531,7 @@ func writeMonthlyCycleSummary(path string, rows []calculatedIssue) error {
 		LeadCount    int
 		CycleDaysAvg float64
 		CycleCount   int
+		TimeToPRAvg  float64
 	}
 	var months []string
 	for m := range byMonth {
@@ -544,6 +545,8 @@ func writeMonthlyCycleSummary(path string, rows []calculatedIssue) error {
 		var leadCnt int
 		var cycleSum float64
 		var cycleCnt int
+		var tprSum float64
+		var tprCnt int
 		for _, r := range issues {
 			end := r.EndDatetime.UTC()
 			if r.LeadTimeStartDatetime != nil {
@@ -556,15 +559,28 @@ func writeMonthlyCycleSummary(path string, rows []calculatedIssue) error {
 				cycleSum += cycle
 				cycleCnt++
 			}
+			// Time to PR = review_start - dev_start (in days)
+			if r.DevStartDatetime != nil && r.ReviewStartDatetime != nil {
+				dev := r.DevStartDatetime.UTC()
+				rev := r.ReviewStartDatetime.UTC()
+				if !rev.Before(dev) {
+					tpr := rev.Sub(dev).Hours() / 24.0
+					tprSum += tpr
+					tprCnt++
+				}
+			}
 		}
-		var leadAvg, cycleAvg float64
+		var leadAvg, cycleAvg, tprAvg float64
 		if leadCnt > 0 {
 			leadAvg = leadSum / float64(leadCnt)
 		}
 		if cycleCnt > 0 {
 			cycleAvg = cycleSum / float64(cycleCnt)
 		}
-		outs = append(outs, outRow{Month: m, IssueCount: len(issues), LeadDaysAvg: leadAvg, LeadCount: leadCnt, CycleDaysAvg: cycleAvg, CycleCount: cycleCnt})
+		if tprCnt > 0 {
+			tprAvg = tprSum / float64(tprCnt)
+		}
+		outs = append(outs, outRow{Month: m, IssueCount: len(issues), LeadDaysAvg: leadAvg, LeadCount: leadCnt, CycleDaysAvg: cycleAvg, CycleCount: cycleCnt, TimeToPRAvg: tprAvg})
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -576,7 +592,7 @@ func writeMonthlyCycleSummary(path string, rows []calculatedIssue) error {
 	defer f.Close()
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	headers := []string{"month", "issues_count", "leadtime_days_avg", "lead_count", "cycletime_days_avg", "cycle_count"}
+	headers := []string{"month", "issues_count", "leadtime_days_avg", "lead_count", "cycletime_days_avg", "cycle_count", "time_to_pr"}
 	if err := w.Write(headers); err != nil {
 		return err
 	}
@@ -588,6 +604,7 @@ func writeMonthlyCycleSummary(path string, rows []calculatedIssue) error {
 			fmt.Sprintf("%d", r.LeadCount),
 			fmt.Sprintf("%.6f", r.CycleDaysAvg),
 			fmt.Sprintf("%d", r.CycleCount),
+			fmt.Sprintf("%.6f", r.TimeToPRAvg),
 		}
 		if err := w.Write(row); err != nil {
 			return err
