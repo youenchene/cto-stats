@@ -713,6 +713,13 @@ func writeWeeklyThroughput(path string, rows []calculatedIssue) error {
 	for i, k := range keys {
 		centers[i] = float64(counts[k])
 	}
+	// Remove the last week (current week) from the output
+	if len(keys) > 0 {
+		keys = keys[:len(keys)-1]
+		centers = centers[:len(centers)-1]
+		ucls = ucls[:len(ucls)-1]
+		lcls = lcls[:len(lcls)-1]
+	}
 	// Write CSV
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
