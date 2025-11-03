@@ -39,16 +39,15 @@ type CurrentProject = gh.CurrentProject
 func Run(args []string) error {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	org := fs.String("org", "", "GitHub organization (optional if -config provided)")
+	org := fs.String("org", "", "GitHub organization (optional if CONFIG_PATH points to config with github.org)")
 	since := fs.String("since", "", "Only issues updated since this ISO8601/RFC3339 time, e.g., 2025-01-01T00:00:00Z (optional)")
 	repoFilter := fs.String("repo", "", "Comma-separated list of repositories to include (optional)")
-	configPath := fs.String("config", "", "Path to YAML config file (default ./config.yml)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	// Resolve config and org
-	cfgPath := *configPath
+	cfgPath := os.Getenv("CONFIG_PATH")
 	if cfgPath == "" {
 		cfgPath = "./config.yml"
 	}
@@ -63,9 +62,9 @@ func Run(args []string) error {
 		}
 	}
 	if *org == "" {
-		fmt.Fprintln(os.Stderr, "-org is required when no config file with github.org is provided")
+		fmt.Fprintln(os.Stderr, "-org is required when no config file with github.org is provided (set CONFIG_PATH to a config file to provide org)")
 		slog.Error("import.validation.error", "reason", "missing org")
-		return fmt.Errorf("missing required -org or -config with github.org")
+		return fmt.Errorf("missing required -org or CONFIG_PATH with github.org")
 	}
 
 	token := os.Getenv("GITHUB_TOKEN")

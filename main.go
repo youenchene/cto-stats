@@ -42,27 +42,12 @@ type CurrentProject = gh.CurrentProject
 func main() {
 	args := os.Args
 	// Initialize slog logger (text to stderr, DEBUG level for now)
-	h := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})
+	h := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
 	slog.SetDefault(slog.New(h))
 
 	if len(args) > 1 {
 		sub := args[1]
 		rest := append([]string{}, args[2:]...)
-		if sub != "web" {
-			defaultCfg := "./config.yml"
-
-			// If no -config provided, append default for all subcommands so they can decide whether to use it or not.
-			hasConfig := false
-			for i := 0; i < len(rest); i++ {
-				if rest[i] == "-config" {
-					hasConfig = true
-					break
-				}
-			}
-			if !hasConfig {
-				rest = append(rest, "-config", defaultCfg)
-			}
-		}
 		switch sub {
 		case "import":
 			if err := cmdimport.Run(rest); err != nil {
@@ -84,7 +69,7 @@ func main() {
 			return
 		}
 	}
-	fmt.Fprintln(os.Stderr, "usage: github-stats [-config ./config.yml] import -org <org> [-since <ts>] [-repo <list>] | calculate | web [-addr :8080] [-data ./data]")
+	fmt.Fprintln(os.Stderr, "usage: github-stats import -org <org> [-since <ts>] [-repo <list>] | calculate | web [-addr :8080] [-data ./data]\nENV: set CONFIG_PATH to point to a YAML config file (default ./config.yml)")
 	os.Exit(2)
 }
 

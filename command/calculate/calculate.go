@@ -3,7 +3,6 @@ package calculate
 import (
 	"encoding/csv"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"math"
@@ -72,18 +71,14 @@ type calculatedIssue struct {
 
 // Run executes the calculate command
 func Run(args []string) error {
-	fs := flag.NewFlagSet("calculate", flag.ContinueOnError)
-	configPath := fs.String("config", "", "Path to YAML config file (required)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	cfgPath := *configPath
+	// Read config path from environment variable CONFIG_PATH; default to ./config.yml
+	cfgPath := os.Getenv("CONFIG_PATH")
 	if cfgPath == "" {
 		cfgPath = "./config.yml"
 	}
 	// For calculate, a config file is required
 	if _, err := os.Stat(cfgPath); err != nil {
-		return fmt.Errorf("calculate: config file required at -config (default ./config.yml): %w", err)
+		return fmt.Errorf("calculate: config file required (set CONFIG_PATH or provide ./config.yml): %w", err)
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {

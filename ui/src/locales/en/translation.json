@@ -18,16 +18,16 @@
     "unassigned": "Unassigned",
     "labels": {
       "opened_bugs": "Red bin (opened_bugs)",
-      "waiting_to_prod": "waiting_to_prod",
-      "in_review": "in_review",
-      "in_qa": "in_qa",
-      "in_dev": "in_dev",
-      "in_ready": "in_ready",
-      "in_backlogs": "in_backlogs"
+      "waiting_to_prod": "Waiting to prod",
+      "in_review": "In Review",
+      "in_qa": "In QA",
+      "in_dev": "In Dev",
+      "in_ready": "In ready",
+      "in_backlogs": "In Backlogs"
     }
   },
   "throughput": {
-    "sectionTitle": "Throughput"
+    "sectionTitle": "Control Chart"
   },
   "chart": {
     "total": "Total"
