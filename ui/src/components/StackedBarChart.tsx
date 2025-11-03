@@ -12,6 +12,7 @@ export function StackedBarChart({
   yTicks = 4,
   showAxes = true,
   barGap = 6,
+  yMax,
 }: {
   labels: string[]
   stacks: StackSeries[]
@@ -21,6 +22,7 @@ export function StackedBarChart({
   yTicks?: number
   showAxes?: boolean
   barGap?: number
+  yMax?: number
 }) {
   const { t } = useTranslation()
   const count = labels.length
@@ -35,7 +37,8 @@ export function StackedBarChart({
   const totals: number[] = Array.from({ length: count }, (_, i) =>
     stacks.reduce((acc, s) => acc + (Number.isFinite(s.values[i]) ? (s.values[i] || 0) : 0), 0)
   )
-  const maxTotal = Math.max(1, ...totals)
+  const dataMax = Math.max(1, ...totals)
+  const maxTotal = Math.max(1, yMax ?? dataMax)
 
   const x = (i: number) => padding + (i * innerW) / count
   const y = (v: number) => padding + (innerH - (v / maxTotal) * innerH)

@@ -4,12 +4,15 @@ import (
 	"encoding/csv"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"cto-stats/connectors/config"
 
 	lo "github.com/samber/lo"
 )
@@ -21,6 +24,7 @@ type issueRow struct {
 	Repo      string
 	Number    string
 	Title     string
+	Type      string
 	IsBug     bool
 	CreatedAt time.Time
 }
@@ -54,18 +58,36 @@ type calculatedIssue struct {
 	CreationDatetime          time.Time
 	LeadTimeStartDatetime     *time.Time
 	CycleTimeStartDatetime    *time.Time
+	PutInReadyStartDatetime   *time.Time
 	DevStartDatetime          *time.Time
 	ReviewStartDatetime       *time.Time
 	QAStartDatetime           *time.Time
 	WaitingToPodStartDatetime *time.Time
 	EndDatetime               *time.Time
 	Bug                       bool
+	Type                      string
+	CurrentColumn             string
 }
 
-// Run executes the calculate command (no extra args expected)
+// Run executes the calculate command
 func Run(args []string) error {
-	if len(args) != 0 {
-		return fmt.Errorf("calculate: no arguments expected")
+	// Read config path from environment variable CONFIG_PATH; default to ./config.yml
+	cfgPath := os.Getenv("CONFIG_PATH")
+	if cfgPath == "" {
+		cfgPath = "./config.yml"
+	}
+	// For calculate, a config file is required
+	if _, err := os.Stat(cfgPath); err != nil {
+		return fmt.Errorf("calculate: config file required (set CONFIG_PATH or provide ./config.yml): %w", err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("calculate: failed to load config: %w", err)
+	}
+	// Build a project lookup by ID for quick access
+	projCfgByID := map[string]config.Project{}
+	for _, p := range cfg.GitHub.Projects {
+		projCfgByID[p.ID] = p
 	}
 
 	// Read inputs from data/
@@ -84,66 +106,132 @@ func Run(args []string) error {
 	}
 
 	// Build output
-	var out []calculatedIssue
+	var allIssues []calculatedIssue
 	for id, is := range issues {
-		proj := projByID[id]
+		projEvents := projByID[id]
 		st := statusByID[id]
+
 		row := calculatedIssue{
 			ID:               id,
 			Name:             is.Title,
 			CreationDatetime: is.CreatedAt,
 			Bug:              is.IsBug,
+			Type:             is.Type,
 		}
-		if len(proj) > 0 {
-			row.ProjectID = proj[0].ProjectID
-			row.ProjectName = proj[0].ProjectName
+		// Determine project on first project event if any
+		var pid, pname string
+		if len(projEvents) > 0 {
+			pid = projEvents[0].ProjectID
+			pname = projEvents[0].ProjectName
+			row.ProjectID = pid
+			row.ProjectName = pname
 		}
-		row.LeadTimeStartDatetime = firstMoveToAny(proj, []string{"Backlog", "Ready"})
-		row.CycleTimeStartDatetime = firstMoveToAny(proj, []string{"In Progress", "In progress"})
-		if row.CycleTimeStartDatetime == nil {
-			row.CycleTimeStartDatetime = firstMoveToAny(proj, []string{"Backlog", "Ready"})
-		}
-		row.DevStartDatetime = firstMoveToAny(proj, []string{"In Progress", "In progress"})
-		if row.DevStartDatetime == nil {
-			row.DevStartDatetime = firstMoveToAny(proj, []string{"Backlog", "Ready"})
-		}
-		row.ReviewStartDatetime = firstMoveToAny(proj, []string{"In review", "In Review"})
-		// No rule yet
-		row.QAStartDatetime = nil
-		row.WaitingToPodStartDatetime = firstMoveTo(proj, "Done")
-		row.EndDatetime = computeEnd(st, proj)
+		// Apply config filters if project known and present in config
+		if pc, ok := projCfgByID[pid]; ok {
+			if pc.Exclude {
+				continue
+			}
+			if len(pc.Types) > 0 {
+				// case-insensitive compare
+				allowed := false
+				for _, t := range pc.Types {
+					if strings.EqualFold(strings.TrimSpace(t), strings.TrimSpace(is.Type)) {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					continue
+				}
+			}
+			// Use configured columns for stage timestamps
+			choose := func(cols []string) *time.Time {
+				if len(cols) > 0 {
+					return firstMoveToAny(projEvents, cols)
+				}
+				return nil
+			}
+			row.LeadTimeStartDatetime = choose(pc.LeadTimeColumns)
+			row.CycleTimeStartDatetime = choose(pc.CycleTimeColumns)
+			row.PutInReadyStartDatetime = choose(pc.PutInReadyColumns)
 
-		out = append(out, row)
+			row.DevStartDatetime = choose(pc.DevStartColumns)
+			row.ReviewStartDatetime = choose(pc.ReviewStartColumns)
+			row.QAStartDatetime = choose(pc.QAStartColumns)
+			row.WaitingToPodStartDatetime = choose(pc.WaitingToProdStartCols)
+			// End datetime: by default earliest of status closed and configured inprod columns (e.g., Archive/Done)
+			var endCandidates []*time.Time
+			if e := choose(pc.InProdStartColumns); e != nil {
+				endCandidates = append(endCandidates, e)
+			}
+			// closed status
+			if ev, ok := lo.Find(st, func(s statusEventRow) bool { return s.Type == "closed" }); ok {
+				end := ev.At
+				endCandidates = append(endCandidates, &end)
+			}
+			row.EndDatetime = earliest(endCandidates)
+			if row.EndDatetime != nil {
+				if row.CycleTimeStartDatetime == nil {
+					row.CycleTimeStartDatetime = row.LeadTimeStartDatetime
+				}
+				if row.DevStartDatetime == nil {
+					row.DevStartDatetime = row.LeadTimeStartDatetime
+				}
+			}
+		} else {
+			slog.Info("calculate.project_unknown", "issue_id", id, "id", pid, "name", pname, "type", is.Type, "events", projEvents, "status", st)
+			// No matching project in config: fallback to legacy behavior
+			row.LeadTimeStartDatetime = firstMoveToAny(projEvents, []string{"Backlog", "Ready"})
+			row.CycleTimeStartDatetime = firstMoveToAny(projEvents, []string{"In Progress", "In progress"})
+			if row.CycleTimeStartDatetime == nil {
+				row.CycleTimeStartDatetime = firstMoveToAny(projEvents, []string{"Backlog", "Ready"})
+			}
+			row.DevStartDatetime = firstMoveToAny(projEvents, []string{"In Progress", "In progress"})
+			if row.DevStartDatetime == nil {
+				row.DevStartDatetime = firstMoveToAny(projEvents, []string{"Backlog", "Ready"})
+			}
+			row.ReviewStartDatetime = firstMoveToAny(projEvents, []string{"In review", "In Review"})
+			row.QAStartDatetime = nil
+			row.PutInReadyStartDatetime = firstMoveToAny(projEvents, []string{"Ready", "In Ready", "Ready for Dev"})
+			row.WaitingToPodStartDatetime = firstMoveTo(projEvents, "Done")
+			row.EndDatetime = computeEnd(st, projEvents)
+		}
+
+		allIssues = append(allIssues, row)
 	}
 
 	// Deterministic order
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	sort.Slice(allIssues, func(i, j int) bool { return allIssues[i].ID < allIssues[j].ID })
 
-	if err := writeOutput(filepath.Join(base, "calculated_issue.csv"), out); err != nil {
+	// Build convenience slices using lo
+	closedIssues := lo.Filter(allIssues, func(ci calculatedIssue, _ int) bool { return ci.EndDatetime != nil })
+	openIssues := lo.Filter(allIssues, func(ci calculatedIssue, _ int) bool { return ci.EndDatetime == nil })
+
+	if err := writeOutput(filepath.Join(base, "calculated_issue.csv"), allIssues); err != nil {
 		return err
 	}
 
 	// Step 2: calculate monthly lead time and cycle time in days, using all issues with an EndDatetime
-	if err := writeMonthlyCycleSummary(filepath.Join(base, "cycle_time.csv"), out); err != nil {
+	if err := writeMonthlyCycleSummary(filepath.Join(base, "cycle_time.csv"), closedIssues); err != nil {
 		return err
 	}
 
 	// Step 3: weekly throughput with Shewhart control limits (c-chart)
-	if err := writeWeeklyThroughput(filepath.Join(base, "throughput_week.csv"), out); err != nil {
+	if err := writeWeeklyThroughput(filepath.Join(base, "throughput_week.csv"), closedIssues); err != nil {
 		return err
 	}
 
 	// Step 4: current stocks for not-closed issues by stage
-	if err := writeStocks(filepath.Join(base, "stocks.csv"), out); err != nil {
+	if err := writeStocks(filepath.Join(base, "stocks.csv"), openIssues); err != nil {
 		return err
 	}
 
 	// Step 5: weekly stocks per project by ISO year-week (cutoff at Sunday 23:59:59 UTC)
-	if err := writeWeeklyStocks(filepath.Join(base, "stocks_week.csv"), out); err != nil {
+	if err := writeWeeklyStocks(filepath.Join(base, "stocks_week.csv"), openIssues); err != nil {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "calculate.done count=%d\n", len(out))
+	slog.Info(fmt.Sprintf("calculate.done count=%d countClosed=%d count Open=%d", len(allIssues), len(closedIssues), len(openIssues)))
 	return nil
 }
 
@@ -160,14 +248,17 @@ func readIssues(path string) (map[string]issueRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Expect headers: org,repo,number,title,url,state,is_bug,creator,assignees,created_at,closed_at,committer
+	// Expect headers: org,repo,number,title,url,state,type,is_bug,creator,assignees,created_at,closed_at,committer
 	idx := indexMap(rec)
-	required := []string{"org", "repo", "number", "title", "is_bug", "created_at"}
+	required := []string{"org", "repo", "number", "title", "created_at"}
 	for _, col := range required {
 		if _, ok := idx[col]; !ok {
 			return nil, fmt.Errorf("issue.csv missing column %s", col)
 		}
 	}
+	// Optional columns for backward compatibility
+	_, hasType := idx["type"]
+	_, hasIsBug := idx["is_bug"]
 
 	res := map[string]issueRow{}
 	for {
@@ -188,9 +279,16 @@ func readIssues(path string) (map[string]issueRow, error) {
 		repo := rec[idx["repo"]]
 		num := rec[idx["number"]]
 		title := rec[idx["title"]]
-		isBug := parseBool(rec[idx["is_bug"]])
+		typeVal := ""
+		if hasType {
+			typeVal = rec[idx["type"]]
+		}
+		isBug := false
+		if hasIsBug {
+			isBug = parseBool(rec[idx["is_bug"]])
+		}
 		created, _ := time.Parse(time.RFC3339, rec[idx["created_at"]])
-		res[key(org, repo, num)] = issueRow{Org: org, Repo: repo, Number: num, Title: title, IsBug: isBug, CreatedAt: created}
+		res[key(org, repo, num)] = issueRow{Org: org, Repo: repo, Number: num, Title: title, Type: typeVal, IsBug: isBug, CreatedAt: created}
 	}
 	return res, nil
 }
@@ -352,6 +450,21 @@ func equalFoldTrim(a, b string) bool {
 	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
+// earliest returns the earliest non-nil time among candidates, or nil if none.
+func earliest(ts []*time.Time) *time.Time {
+	var res *time.Time
+	for _, t := range ts {
+		if t == nil {
+			continue
+		}
+		if res == nil || t.Before(*res) {
+			tt := *t
+			res = &tt
+		}
+	}
+	return res
+}
+
 func writeOutput(path string, rows []calculatedIssue) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -363,7 +476,7 @@ func writeOutput(path string, rows []calculatedIssue) error {
 	defer f.Close()
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	headers := []string{"id", "name", "project_id", "project_name", "creationdatetime", "leadtimestartdatetime", "cycletimestartdatetime", "devstartdatetime", "reviewstartdatetime", "qastartdatetime", "waitingtopodstartdateime", "enddatetime", "bug"}
+	headers := []string{"id", "name", "project_id", "project_name", "creationdatetime", "leadtimestartdatetime", "cycletimestartdatetime", "putinreadystartdatetime", "devstartdatetime", "reviewstartdatetime", "qastartdatetime", "waitingtopodstartdateime", "enddatetime", "bug", "type"}
 	if err := w.Write(headers); err != nil {
 		return err
 	}
@@ -376,12 +489,14 @@ func writeOutput(path string, rows []calculatedIssue) error {
 			r.CreationDatetime.UTC().Format(time.RFC3339),
 			formatTime(r.LeadTimeStartDatetime),
 			formatTime(r.CycleTimeStartDatetime),
+			formatTime(r.PutInReadyStartDatetime),
 			formatTime(r.DevStartDatetime),
 			formatTime(r.ReviewStartDatetime),
 			formatTime(r.QAStartDatetime),
 			formatTime(r.WaitingToPodStartDatetime),
 			formatTime(r.EndDatetime),
 			fmt.Sprintf("%t", r.Bug),
+			r.Type,
 		}
 		if err := w.Write(row); err != nil {
 			return err
@@ -415,6 +530,7 @@ func writeMonthlyCycleSummary(path string, rows []calculatedIssue) error {
 		LeadCount    int
 		CycleDaysAvg float64
 		CycleCount   int
+		TimeToPRAvg  float64
 	}
 	var months []string
 	for m := range byMonth {
@@ -428,6 +544,8 @@ func writeMonthlyCycleSummary(path string, rows []calculatedIssue) error {
 		var leadCnt int
 		var cycleSum float64
 		var cycleCnt int
+		var tprSum float64
+		var tprCnt int
 		for _, r := range issues {
 			end := r.EndDatetime.UTC()
 			if r.LeadTimeStartDatetime != nil {
@@ -440,15 +558,28 @@ func writeMonthlyCycleSummary(path string, rows []calculatedIssue) error {
 				cycleSum += cycle
 				cycleCnt++
 			}
+			// Time to PR = review_start - dev_start (in days)
+			if r.DevStartDatetime != nil && r.ReviewStartDatetime != nil {
+				dev := r.DevStartDatetime.UTC()
+				rev := r.ReviewStartDatetime.UTC()
+				if !rev.Before(dev) {
+					tpr := rev.Sub(dev).Hours() / 24.0
+					tprSum += tpr
+					tprCnt++
+				}
+			}
 		}
-		var leadAvg, cycleAvg float64
+		var leadAvg, cycleAvg, tprAvg float64
 		if leadCnt > 0 {
 			leadAvg = leadSum / float64(leadCnt)
 		}
 		if cycleCnt > 0 {
 			cycleAvg = cycleSum / float64(cycleCnt)
 		}
-		outs = append(outs, outRow{Month: m, IssueCount: len(issues), LeadDaysAvg: leadAvg, LeadCount: leadCnt, CycleDaysAvg: cycleAvg, CycleCount: cycleCnt})
+		if tprCnt > 0 {
+			tprAvg = tprSum / float64(tprCnt)
+		}
+		outs = append(outs, outRow{Month: m, IssueCount: len(issues), LeadDaysAvg: leadAvg, LeadCount: leadCnt, CycleDaysAvg: cycleAvg, CycleCount: cycleCnt, TimeToPRAvg: tprAvg})
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -460,7 +591,7 @@ func writeMonthlyCycleSummary(path string, rows []calculatedIssue) error {
 	defer f.Close()
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	headers := []string{"month", "issues_count", "leadtime_days_avg", "lead_count", "cycletime_days_avg", "cycle_count"}
+	headers := []string{"month", "issues_count", "leadtime_days_avg", "lead_count", "cycletime_days_avg", "cycle_count", "time_to_pr"}
 	if err := w.Write(headers); err != nil {
 		return err
 	}
@@ -472,6 +603,7 @@ func writeMonthlyCycleSummary(path string, rows []calculatedIssue) error {
 			fmt.Sprintf("%d", r.LeadCount),
 			fmt.Sprintf("%.6f", r.CycleDaysAvg),
 			fmt.Sprintf("%d", r.CycleCount),
+			fmt.Sprintf("%.6f", r.TimeToPRAvg),
 		}
 		if err := w.Write(row); err != nil {
 			return err
@@ -597,6 +729,13 @@ func writeWeeklyThroughput(path string, rows []calculatedIssue) error {
 	for i, k := range keys {
 		centers[i] = float64(counts[k])
 	}
+	// Remove the last week (current week) from the output
+	if len(keys) > 0 {
+		keys = keys[:len(keys)-1]
+		centers = centers[:len(centers)-1]
+		ucls = ucls[:len(ucls)-1]
+		lcls = lcls[:len(lcls)-1]
+	}
 	// Write CSV
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -634,6 +773,7 @@ func writeStocks(path string, rows []calculatedIssue) error {
 	type agg struct {
 		OpenedBugs    int
 		InBacklogs    int
+		InReady       int
 		InDev         int
 		InReview      int
 		InQA          int
@@ -645,26 +785,29 @@ func writeStocks(path string, rows []calculatedIssue) error {
 		Agg         agg
 	}{}
 	// helper to get bucket/stage booleans for a not-closed issue
-	stageFlags := func(r calculatedIssue) (openedBug bool, inBacklog bool, inDev bool, inReview bool, inQA bool, waiting bool) {
+	stageFlags := func(r calculatedIssue) (openedBug bool, inBacklog bool, inReady bool, inDev bool, inReview bool, inQA bool, waiting bool) {
 		if r.EndDatetime != nil {
-			return false, false, false, false, false, false
+			return false, false, false, false, false, false, false
 		}
 		openedBug = r.Bug
-		// Stage logic: take the furthest known stage, ensuring exclusivity across stages
+		// Stage logic: furthest known stage wins (exclusive buckets)
 		if r.WaitingToPodStartDatetime != nil {
-			return openedBug, false, false, false, false, true
+			return openedBug, false, false, false, false, false, true
 		}
 		if r.QAStartDatetime != nil {
-			return openedBug, false, false, false, true, false
+			return openedBug, false, false, false, true, false, false
 		}
 		if r.ReviewStartDatetime != nil {
-			return openedBug, false, false, true, false, false
+			return openedBug, false, false, true, false, false, false
 		}
 		if r.DevStartDatetime != nil {
-			return openedBug, false, true, false, false, false
+			return openedBug, false, false, true, false, false, false
+		}
+		if r.PutInReadyStartDatetime != nil {
+			return openedBug, false, true, false, false, false, false
 		}
 		// Backlog (only early dates present: creation/lead/cycle)
-		return openedBug, true, false, false, false, false
+		return openedBug, true, false, false, false, false, false
 	}
 	for _, r := range rows {
 		if r.EndDatetime != nil {
@@ -674,12 +817,15 @@ func writeStocks(path string, rows []calculatedIssue) error {
 		rec := byProj[key]
 		rec.ProjectID = r.ProjectID
 		rec.ProjectName = r.ProjectName
-		ob, ib, id, ir, iq, iw := stageFlags(r)
+		ob, ib, iready, id, ir, iq, iw := stageFlags(r)
 		if ob {
 			rec.Agg.OpenedBugs++
 		}
 		if ib {
 			rec.Agg.InBacklogs++
+		}
+		if iready {
+			rec.Agg.InReady++
 		}
 		if id {
 			rec.Agg.InDev++
@@ -706,7 +852,7 @@ func writeStocks(path string, rows []calculatedIssue) error {
 	defer f.Close()
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	headers := []string{"project_id", "project_name", "opened_bugs", "in_backlogs", "in_dev", "in_review", "in_qa", "waiting_to_prod"}
+	headers := []string{"project_id", "project_name", "opened_bugs", "in_backlogs", "in_ready", "in_dev", "in_review", "in_qa", "waiting_to_prod"}
 	if err := w.Write(headers); err != nil {
 		return err
 	}
@@ -723,6 +869,7 @@ func writeStocks(path string, rows []calculatedIssue) error {
 			rec.ProjectName,
 			fmt.Sprintf("%d", rec.Agg.OpenedBugs),
 			fmt.Sprintf("%d", rec.Agg.InBacklogs),
+			fmt.Sprintf("%d", rec.Agg.InReady),
 			fmt.Sprintf("%d", rec.Agg.InDev),
 			fmt.Sprintf("%d", rec.Agg.InReview),
 			fmt.Sprintf("%d", rec.Agg.InQA),
@@ -746,7 +893,7 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 			t := c
 			minT = &t
 		}
-		cands := []*time.Time{r.LeadTimeStartDatetime, r.CycleTimeStartDatetime, r.DevStartDatetime, r.ReviewStartDatetime, r.QAStartDatetime, r.WaitingToPodStartDatetime, r.EndDatetime}
+		cands := []*time.Time{r.LeadTimeStartDatetime, r.CycleTimeStartDatetime, r.PutInReadyStartDatetime, r.DevStartDatetime, r.ReviewStartDatetime, r.QAStartDatetime, r.WaitingToPodStartDatetime, r.EndDatetime}
 		for _, p := range cands {
 			if p == nil {
 				continue
@@ -770,7 +917,7 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 		defer f.Close()
 		w := csv.NewWriter(f)
 		defer w.Flush()
-		headers := []string{"year", "week", "project_id", "project_name", "opened_bugs", "in_backlogs", "in_dev", "in_review", "in_qa", "waiting_to_prod"}
+		headers := []string{"year", "week", "project_id", "project_name", "opened_bugs", "in_backlogs", "in_ready", "in_dev", "in_review", "in_qa", "waiting_to_prod"}
 		if err := w.Write(headers); err != nil {
 			return err
 		}
@@ -791,21 +938,21 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 	end := alignToMonday(*maxT)
 	type wk struct{ Year, Week int }
 	// Iterate weeks
-	type agg struct{ OpenedBugs, InBacklogs, InDev, InReview, InQA, WaitingToProd int }
+	type agg struct{ OpenedBugs, InBacklogs, InReady, InDev, InReview, InQA, WaitingToProd int }
 	type rec struct {
 		ProjectID, ProjectName string
 		Agg                    agg
 	}
 	// Helper: determine stage at cutoff
-	stageAt := func(r calculatedIssue, cutoff time.Time) (openedBug bool, inBacklog bool, inDev bool, inReview bool, inQA bool, waiting bool) {
+	stageAt := func(r calculatedIssue, cutoff time.Time) (openedBug bool, inBacklog bool, inReady bool, inDev bool, inReview bool, inQA bool, waiting bool) {
 		cu := cutoff
 		// Not yet created
 		if timeUTC(r.CreationDatetime).After(cu) {
-			return false, false, false, false, false, false
+			return false, false, false, false, false, false, false
 		}
 		// If ended before or at cutoff, it is not in stock
 		if r.EndDatetime != nil && !r.EndDatetime.UTC().After(cu) {
-			return false, false, false, false, false, false
+			return false, false, false, false, false, false, false
 		}
 		openedBug = r.Bug
 		// Helper to check ts <= cutoff
@@ -813,22 +960,26 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 		// Furthest stage reached as of cutoff (no later stage timestamp <= cutoff)
 		// Waiting
 		if le(r.WaitingToPodStartDatetime) {
-			return openedBug, false, false, false, false, true
+			return openedBug, false, false, false, false, false, true
 		}
 		// QA
 		if le(r.QAStartDatetime) && !le(r.WaitingToPodStartDatetime) {
-			return openedBug, false, false, false, true, false
+			return openedBug, false, false, false, true, false, false
 		}
 		// Review
 		if le(r.ReviewStartDatetime) && !le(r.QAStartDatetime) && !le(r.WaitingToPodStartDatetime) {
-			return openedBug, false, false, true, false, false
+			return openedBug, false, false, true, false, false, false
 		}
 		// Dev
 		if le(r.DevStartDatetime) && !le(r.ReviewStartDatetime) && !le(r.QAStartDatetime) && !le(r.WaitingToPodStartDatetime) {
-			return openedBug, false, true, false, false, false
+			return openedBug, false, false, true, false, false, false
 		}
-		// Backlog if created and dev not started as of cutoff
-		return openedBug, true, false, false, false, false
+		// In Ready
+		if le(r.PutInReadyStartDatetime) && !le(r.DevStartDatetime) && !le(r.ReviewStartDatetime) && !le(r.QAStartDatetime) && !le(r.WaitingToPodStartDatetime) {
+			return openedBug, false, true, false, false, false, false
+		}
+		// Backlog if created and no later stage as of cutoff
+		return openedBug, true, false, false, false, false, false
 	}
 	// Aggregate per week per project
 	byWeekProj := map[wk]map[string]rec{}
@@ -838,8 +989,8 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 		y, w := cur.ISOWeek()
 		projMap := map[string]rec{}
 		for _, r := range rows {
-			ob, ib, id, ir, iq, iw := stageAt(r, cutoff)
-			if !(ob || ib || id || ir || iq || iw) {
+			ob, ib, iready, id, ir, iq, iw := stageAt(r, cutoff)
+			if !(ob || ib || iready || id || ir || iq || iw) {
 				continue
 			}
 			k := r.ProjectID + "\u0000" + r.ProjectName
@@ -851,6 +1002,9 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 			}
 			if ib {
 				rr.Agg.InBacklogs++
+			}
+			if iready {
+				rr.Agg.InReady++
 			}
 			if id {
 				rr.Agg.InDev++
@@ -879,7 +1033,7 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 	defer f.Close()
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	headers := []string{"year", "week", "project_id", "project_name", "opened_bugs", "in_backlogs", "in_dev", "in_review", "in_qa", "waiting_to_prod"}
+	headers := []string{"year", "week", "project_id", "project_name", "opened_bugs", "in_backlogs", "in_ready", "in_dev", "in_review", "in_qa", "waiting_to_prod"}
 	if err := w.Write(headers); err != nil {
 		return err
 	}
@@ -911,6 +1065,7 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 				rec.ProjectName,
 				fmt.Sprintf("%d", rec.Agg.OpenedBugs),
 				fmt.Sprintf("%d", rec.Agg.InBacklogs),
+				fmt.Sprintf("%d", rec.Agg.InReady),
 				fmt.Sprintf("%d", rec.Agg.InDev),
 				fmt.Sprintf("%d", rec.Agg.InReview),
 				fmt.Sprintf("%d", rec.Agg.InQA),

@@ -104,7 +104,7 @@ func WriteIssueCSV(path string, reports []gh.IssueReport) error {
 	defer f.Close()
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	headers := []string{"org", "repo", "number", "title", "url", "state", "is_bug", "creator", "assignees", "created_at", "closed_at", "committer"}
+	headers := []string{"org", "repo", "number", "title", "url", "state", "type", "is_bug", "creator", "assignees", "created_at", "closed_at", "committer"}
 	if err := w.Write(headers); err != nil {
 		return err
 	}
@@ -122,6 +122,7 @@ func WriteIssueCSV(path string, reports []gh.IssueReport) error {
 			rep.Title,
 			rep.URL,
 			rep.State,
+			rep.Type,
 			strconv.FormatBool(rep.IsBug),
 			rep.Creator,
 			assignees,

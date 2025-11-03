@@ -6,6 +6,7 @@ import (
 	cmdweb "cto-stats/command/web"
 	gh "cto-stats/domain/github"
 	"fmt"
+	"log/slog"
 	"os"
 )
 
@@ -40,29 +41,35 @@ type CurrentProject = gh.CurrentProject
 
 func main() {
 	args := os.Args
+	// Initialize slog logger (text to stderr, DEBUG level for now)
+	h := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
+	slog.SetDefault(slog.New(h))
+
 	if len(args) > 1 {
-		switch args[1] {
+		sub := args[1]
+		rest := append([]string{}, args[2:]...)
+		switch sub {
 		case "import":
-			if err := cmdimport.Run(args[2:]); err != nil {
+			if err := cmdimport.Run(rest); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
 			return
 		case "calculate":
-			if err := cmdcalculate.Run(args[2:]); err != nil {
+			if err := cmdcalculate.Run(rest); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
 			return
 		case "web":
-			if err := cmdweb.Run(args[2:]); err != nil {
+			if err := cmdweb.Run(rest); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
 			return
 		}
 	}
-	fmt.Fprintln(os.Stderr, "usage: github-stats import -org <org> [-since <ts>] [-repo <list>] | calculate | web [-addr :8080] [-data ./data]")
+	fmt.Fprintln(os.Stderr, "usage: github-stats import -org <org> [-since <ts>] [-repo <list>] | calculate | web [-addr :8080] [-data ./data]\nENV: set CONFIG_PATH to point to a YAML config file (default ./config.yml)")
 	os.Exit(2)
 }
 

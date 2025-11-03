@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useCycleTimes, useStocks, useStocksWeek, useThroughputWeek } from './api'
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card'
 import { Sparkline } from './components/Sparkline'
@@ -49,15 +49,20 @@ function LeadCycleBlock() {
     cycle: parseNumber(
       r['cycletime_days_avg'] ?? r['cycle_time'] ?? r['cycle'] ?? r['cycletime']
     ),
+    timeToPR: parseNumber(
+      r['time_to_pr'] ?? r['time_to_pr_days'] ?? r['timeto_pr'] ?? r['time_to_pr_avg']
+    ),
   }))
   const leadSeries = points.map((p) => p.lead ?? 0)
   const cycleSeries = points.map((p) => p.cycle ?? 0)
+  const tprSeries = points.map((p) => p.timeToPR ?? 0)
   const leadLast = points.length ? points[points.length - 1].lead : null
   const cycleLast = points.length ? points[points.length - 1].cycle : null
+  const tprLast = points.length ? points[points.length - 1].timeToPR : null
   return (
     <section>
       <h2 className="text-xl font-semibold mb-3">{t('leadCycle.sectionTitle')}</h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <CardHeader>
             <CardTitle>{t('leadCycle.leadCardTitle')}</CardTitle>
@@ -65,7 +70,7 @@ function LeadCycleBlock() {
           <CardContent>
             <div className="flex items-end justify-between">
               <Sparkline data={leadSeries} width={300} />
-                <BigNumber label={t('common.current')} value={leadLast} unit={t('units.days')} />
+              <BigNumber label={t('common.current')} value={leadLast} unit={t('units.days')} />
             </div>
           </CardContent>
         </Card>
@@ -75,7 +80,19 @@ function LeadCycleBlock() {
           </CardHeader>
           <CardContent>
             <div className="flex items-end justify-between">
-              <Sparkline data={cycleSeries} width={300} /><BigNumber label={t('common.current')} value={cycleLast} unit={t('units.days')} />
+              <Sparkline data={cycleSeries} width={300} />
+              <BigNumber label={t('common.current')} value={cycleLast} unit={t('units.days')} />
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('leadCycle.timeToPRCardTitle')}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-end justify-between">
+              <Sparkline data={tprSeries} width={300} />
+              <BigNumber label={t('common.current')} value={tprLast} unit={t('units.days')} />
             </div>
           </CardContent>
         </Card>
@@ -140,11 +157,26 @@ function StocksBlock() {
   const items: { key: string; labelKey: string }[] = [
     { key: 'opened_bugs', labelKey: 'opened_bugs' },
     { key: 'waiting_to_prod', labelKey: 'waiting_to_prod' },
-    { key: 'in_review', labelKey: 'in_review' },
     { key: 'in_qa', labelKey: 'in_qa' },
+    { key: 'in_review', labelKey: 'in_review' },
     { key: 'in_dev', labelKey: 'in_dev' },
+    { key: 'in_ready', labelKey: 'in_ready' },
     { key: 'in_backlogs', labelKey: 'in_backlogs' },
   ]
+
+  // Compute a global Y max across all stacked charts so they share the same scale
+  const globalYMax = useMemo(() => {
+    let maxVal = 1
+    for (const { key } of items) {
+      const { stacks } = stacksFor(key)
+      // totals per bar (per label)
+      for (let i = 0; i < labelList.length; i++) {
+        const total = stacks.reduce((acc, s) => acc + (s.values[i] || 0), 0)
+        if (total > maxVal) maxVal = total
+      }
+    }
+    return maxVal
+  }, [rows, projectNames, labelList])
 
   return (
     <section>
@@ -171,7 +203,7 @@ function StocksBlock() {
                       }
                     }}
                   >
-                    <StackedBarChart labels={labels} stacks={stacks} width={900} height={220} />
+                    <StackedBarChart labels={labels} stacks={stacks} width={900} height={220} yMax={globalYMax} />
                   </div>
                   <div className="col-span-1 flex justify-center">
                     <BigNumber label={t('common.current')} value={total} unit={t('units.issues')} />
