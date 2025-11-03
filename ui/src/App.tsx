@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useCycleTimes, useStocks, useStocksWeek, useThroughputWeek } from './api'
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card'
 import { Sparkline } from './components/Sparkline'
@@ -164,6 +164,20 @@ function StocksBlock() {
     { key: 'in_backlogs', labelKey: 'in_backlogs' },
   ]
 
+  // Compute a global Y max across all stacked charts so they share the same scale
+  const globalYMax = useMemo(() => {
+    let maxVal = 1
+    for (const { key } of items) {
+      const { stacks } = stacksFor(key)
+      // totals per bar (per label)
+      for (let i = 0; i < labelList.length; i++) {
+        const total = stacks.reduce((acc, s) => acc + (s.values[i] || 0), 0)
+        if (total > maxVal) maxVal = total
+      }
+    }
+    return maxVal
+  }, [rows, projectNames, labelList])
+
   return (
     <section>
       <h2 className="text-xl font-semibold mb-3">{t('stocks.sectionTitle')}</h2>
@@ -189,7 +203,7 @@ function StocksBlock() {
                       }
                     }}
                   >
-                    <StackedBarChart labels={labels} stacks={stacks} width={900} height={220} />
+                    <StackedBarChart labels={labels} stacks={stacks} width={900} height={220} yMax={globalYMax} />
                   </div>
                   <div className="col-span-1 flex justify-center">
                     <BigNumber label={t('common.current')} value={total} unit={t('units.issues')} />
