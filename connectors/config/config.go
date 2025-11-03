@@ -30,6 +30,7 @@ type Project struct {
 	DevStartColumns        []string `yaml:"dev_start_columns"`
 	ReviewStartColumns     []string `yaml:"review_start_columns"`
 	QAStartColumns         []string `yaml:"qa_start_columns"`
+	PutInReadyColumns      []string `yaml:"put_in_ready_columns"`
 	WaitingToProdStartCols []string `yaml:"waitingtoprod_start_columns"`
 	InProdStartColumns     []string `yaml:"inprod_start_columns"`
 }

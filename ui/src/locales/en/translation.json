@@ -22,6 +22,7 @@
       "in_review": "in_review",
       "in_qa": "in_qa",
       "in_dev": "in_dev",
+      "in_ready": "in_ready",
       "in_backlogs": "in_backlogs"
     }
   },
