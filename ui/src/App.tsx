@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { useCycleTimes, useStocks, useStocksWeek, useThroughputWeek } from './api'
+import { useCycleTimes, useStocks, useStocksWeek, useThroughputWeek, usePRChangeRequestsWeek } from './api'
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card'
 import { Sparkline } from './components/Sparkline'
 import { LineChart, Point } from './components/LineChart'
@@ -22,12 +22,41 @@ function BigNumber({ label, value, unit }: { label: string; value: number | null
 
 export default function App() {
   const { t } = useTranslation()
+  const [activeTab, setActiveTab] = useState<'general' | 'dev'>('general')
   return (
     <div className="min-h-full p-6 space-y-8">
       <h1 className="text-2xl font-semibold tracking-tight">{t('common.appTitle')}</h1>
-      <LeadCycleBlock />
-      <StocksBlock />
-      <ThroughputBlock />
+      <div className="border-b mb-4">
+        <div className="flex gap-4">
+          <button
+            className={`px-3 py-2 -mb-px border-b-2 ${
+              activeTab === 'general' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-600'
+            }`}
+            onClick={() => setActiveTab('general')}
+          >
+            {t('tabs.general')}
+          </button>
+          <button
+            className={`px-3 py-2 -mb-px border-b-2 ${
+              activeTab === 'dev' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-600'
+            }`}
+            onClick={() => setActiveTab('dev')}
+          >
+            {t('tabs.devProcess')}
+          </button>
+        </div>
+      </div>
+      {activeTab === 'general' ? (
+        <>
+          <LeadCycleBlock />
+          <StocksBlock />
+          <ThroughputBlock />
+        </>
+      ) : (
+        <>
+          <DevProcessBlock />
+        </>
+      )}
     </div>
   )
 }
@@ -93,6 +122,79 @@ function LeadCycleBlock() {
             <div className="flex items-end justify-between">
               <Sparkline data={tprSeries} width={300} />
               <BigNumber label={t('common.current')} value={tprLast} unit={t('units.days')} />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </section>
+  )
+}
+
+function DevProcessBlock() {
+  const { t } = useTranslation()
+  const prWeek = usePRChangeRequestsWeek()
+  const weekRows = prWeek.data ?? []
+
+  // Stacked PR count per repo per week for the first card
+  const prCountsByLabel = new Map<string, Map<string, number>>()
+  const labelList: string[] = []
+  for (const r of weekRows) {
+    const y = r['year'] ?? ''
+    const w = r['week'] ?? ''
+    const repo = r['repo'] ?? ''
+    if (!y || !w || !repo) continue
+    const lab = `${y}-W${String(w).padStart(2, '0')}`
+    if (repo === 'ALL') continue
+    if (!prCountsByLabel.has(lab)) { prCountsByLabel.set(lab, new Map()); labelList.push(lab) }
+    const m = prCountsByLabel.get(lab)!
+    m.set(repo, (m.get(repo) ?? 0) + (parseNumber(r['cr_total']) ?? 0))
+  }
+  // Build stacks for repos
+  const repoNames = Array.from(new Set(weekRows.map(r => r['repo']).filter(r => r && r !== 'ALL'))) as string[]
+  repoNames.sort()
+  const stacks: StackSeries[] = repoNames.map((name) => ({ name, values: labelList.map((lab) => prCountsByLabel.get(lab)?.get(name) ?? 0) }))
+
+
+  // For the stacked chart yMax, reuse the global Stocks scale later in page
+  const yMax = undefined as number | undefined
+
+  return (
+    <section>
+      <h2 className="text-xl font-semibold mb-3">{t('devProcess.sectionTitle')}</h2>
+      <div className="space-y-4">
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('devProcess.crStackedTitle')}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-4 gap-4 items-center">
+              <div
+                className="col-span-3 overflow-x-auto"
+                ref={(el) => {
+                  if (el) {
+                    requestAnimationFrame(() => {
+                      ;(el as HTMLDivElement).scrollLeft = (el as HTMLDivElement).scrollWidth
+                    })
+                  }
+                }}
+              >
+                {(() => {
+                  const padding = 32
+                  const barGap = 6
+                  const targetBarW = 12
+                  const chartWidth = Math.max(900, padding * 2 + labelList.length * (targetBarW + barGap))
+                  return (
+                    <StackedBarChart labels={labelList} stacks={stacks} width={chartWidth} height={240} yMax={yMax} barGap={barGap} />
+                  )
+                })()}
+              </div>
+              <div className="col-span-1 flex justify-center">
+                {(() => {
+                  const idx = labelList.length ? labelList.length - 1 : -1
+                  const total = idx >= 0 ? stacks.reduce((acc, s) => acc + (s.values[idx] || 0), 0) : null
+                  return <BigNumber label={t('common.lastWeek') || 'Last week'} value={total} unit={t('devProcess.unit')} />
+                })()}
+              </div>
             </div>
           </CardContent>
         </Card>

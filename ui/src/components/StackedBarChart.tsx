@@ -146,7 +146,15 @@ export function StackedBarChart({
               const titleLineHeight = 16
               const gapBelowTitle = 18
               const itemLineHeight = 16
-              const tooltipH = titleLineHeight + gapBelowTitle + hoverData.parts.length * itemLineHeight + 12
+              const items = (hoverData.total > 0
+                ? hoverData.parts
+                    .map((p) => ({
+                      ...p,
+                      percent: Math.round((p.value / hoverData.total) * 100),
+                    }))
+                    .filter((p) => p.percent > 0)
+                : [])
+              const tooltipH = titleLineHeight + gapBelowTitle + items.length * itemLineHeight + 12
               const tx = Math.min(width - padding - tooltipW, bx + barW + 8)
               const ty = padding + 8
               const titleY = ty + titleLineHeight
@@ -155,11 +163,11 @@ export function StackedBarChart({
                 <g>
                   <rect x={tx} y={ty} width={tooltipW} height={tooltipH} fill="#ffffff" stroke="#e5e7eb" rx={6} ry={6} />
                   <text x={tx + 8} y={titleY} fontSize="11" fill="#111827">{hoverData.label} — {t('chart.total')} {hoverData.total.toFixed(0)}</text>
-                  {hoverData.parts.map((p, idx) => (
+                  {items.map((p, idx) => (
                     <g key={idx}>
                       <rect x={tx + 8} y={firstItemBaseY + idx * itemLineHeight - 8} width={8} height={8} fill={p.color} />
                       <text x={tx + 20} y={firstItemBaseY + idx * itemLineHeight} fontSize="11" fill="#374151">
-                        {p.name}: {p.value.toFixed(0)}{hoverData.total > 0 ? ` (${Math.round((p.value / hoverData.total) * 100)}%)` : ''}
+                        {p.name}: {p.value.toFixed(0)} ({p.percent}%)
                       </text>
                     </g>
                   ))}

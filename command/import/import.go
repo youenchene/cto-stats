@@ -258,8 +258,45 @@ func Run(args []string) error {
 	if err := ccsv.WriteAllCSVs(*org, repos, reports); err != nil {
 		slog.Error("phase.csv.write.error", "error", err)
 		fmt.Fprintf(os.Stderr, "failed to write CSV outputs: %v\n", err)
-		// do not exit; JSON already written
 	}
+
+	// New: fetch PRs and reviews and write to unified CSVs
+	// Prepare unified PR file: remove any previous run to avoid duplicates
+	prUnifiedPath := "data/pr.csv"
+	_ = os.Remove(prUnifiedPath)
+	// Also reset reviews file for a clean run
+	rvUnifiedPath := "data/pr_review.csv"
+	_ = os.Remove(rvUnifiedPath)
+	for _, r := range repos {
+		if *repoFilter != "" && !allowedRepos[r.Name] {
+			continue
+		}
+		// List PRs opened/updated since
+		prs, err := ghc.ListAllPullRequests(ctx, r.Owner.Login, r.Name, *since)
+		if err != nil {
+			slog.Warn("phase.prs.fetch.error", "owner", r.Owner.Login, "repo", r.Name, "error", err)
+			continue
+		}
+		// Append to unified PR CSV with repo column
+		if err := ccsv.AppendPullRequests(prUnifiedPath, *org, r.Name, prs); err != nil {
+			slog.Warn("phase.prs.csv.error", "repo", r.Name, "error", err)
+		}
+		// For each PR, fetch reviews and append to unified pr_review.csv
+		for _, pr := range prs {
+			reviews, err := ghc.ListAllPullRequestReviews(ctx, r.Owner.Login, r.Name, pr.Number)
+			if err != nil {
+				slog.Warn("phase.pr.reviews.fetch.error", "repo", r.Name, "pr", pr.Number, "error", err)
+				continue
+			}
+			if len(reviews) == 0 {
+				continue
+			}
+			if err := ccsv.AppendPullRequestReviews(rvUnifiedPath, *org, r.Name, pr.Number, reviews); err != nil {
+				slog.Warn("phase.pr.reviews.csv.error", "repo", r.Name, "pr", pr.Number, "error", err)
+			}
+		}
+	}
+
 	slog.Info("import.done", "reports", len(reports))
 	return nil
 }

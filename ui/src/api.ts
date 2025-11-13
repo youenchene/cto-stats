@@ -36,3 +36,24 @@ export function useThroughputWeek() {
     queryFn: () => fetchJSON('/api/throughput/week'),
   })
 }
+
+export function usePRChangeRequestsWeek() {
+  return useQuery<Row[]>({
+    queryKey: ['pr_change_requests_week'],
+    queryFn: () => fetchJSON('/api/pr/change_requests'),
+  })
+}
+
+export function usePRChangeRequestsRepo() {
+  return useQuery<Row[]>({
+    queryKey: ['pr_change_requests_repo'],
+    queryFn: () => fetchJSON('/api/pr/change_requests/repo'),
+  })
+}
+
+export function usePRChangeRequestsRepoDist() {
+  return useQuery<Row[]>({
+    queryKey: ['pr_change_requests_repo_dist'],
+    queryFn: () => fetchJSON('/api/pr/change_requests/repo_dist'),
+  })
+}

@@ -1,7 +1,12 @@
 {
   "common": {
     "appTitle": "CTO Dashboard",
-    "current": "Current"
+    "current": "Current",
+    "lastWeek": "Last week"
+  },
+  "tabs": {
+    "general": "General",
+    "devProcess": "Developer Process Insights"
   },
   "units": {
     "days": "Days",
@@ -31,5 +36,16 @@
   },
   "chart": {
     "total": "Total"
+  },
+  "devProcess": {
+    "sectionTitle": "Developer Process Insights",
+    "crStackedTitle": "Change Request count per week (stacked by repo)",
+    "crTrendTitle": "Change requests per PR (median)",
+    "showDistribution": "Show distribution",
+    "close": "Close",
+    "avg": "Average",
+    "median": "Median",
+    "p90": "P90",
+    "unit": "requests"
   }
 }

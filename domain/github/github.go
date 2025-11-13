@@ -35,6 +35,26 @@ type Label struct {
 	Name string `json:"name"`
 }
 
+// PullRequest represents a GitHub pull request (subset of fields we need)
+type PullRequest struct {
+	Number    int        `json:"number"`
+	Title     string     `json:"title"`
+	State     string     `json:"state"`
+	HTMLURL   string     `json:"html_url"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	ClosedAt  *time.Time `json:"closed_at"`
+	MergedAt  *time.Time `json:"merged_at"`
+	User      *User      `json:"user"`
+}
+
+// PullRequestReview represents a review on a PR
+type PullRequestReview struct {
+	State       string    `json:"state"` // APPROVED|CHANGES_REQUESTED|COMMENTED|DISMISSED
+	SubmittedAt time.Time `json:"submitted_at"`
+	User        *User     `json:"user"`
+}
+
 // TimelineEvent captures various events, including project card movements
 // Note: Only fields used by the collector are modeled
 type TimelineEvent struct {

@@ -93,6 +93,153 @@ func drainAndClose(rc io.ReadCloser) error {
 	return rc.Close()
 }
 
+// ListAllPullRequests lists PRs for a repo, optionally filtered by created since (ISO8601 string). Uses GraphQL.
+func (hc *Client) ListAllPullRequests(ctx context.Context, owner, repo, since string) ([]gh.PullRequest, error) {
+	slog.Info("phase.prs.fetch.start", "owner", owner, "repo", repo, "since", since)
+	var all []gh.PullRequest
+	query := `query($owner:String!, $name:String!, $pageSize:Int!, $after:String){
+  repository(owner:$owner, name:$name){
+    pullRequests(first:$pageSize, after:$after, orderBy:{field:UPDATED_AT, direction:ASC}, states:[OPEN, MERGED, CLOSED]){
+      pageInfo{hasNextPage endCursor}
+      nodes{
+        number
+        title
+        state
+        url
+        createdAt
+        updatedAt
+        closedAt
+        mergedAt
+        author{login}
+      }
+    }
+  }
+}`
+	vars := map[string]any{"owner": owner, "name": repo, "pageSize": perPage}
+	for {
+		body, _ := json.Marshal(map[string]any{"query": query, "variables": vars})
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, githubGraphQLEndpoint, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+hc.token)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := hc.do(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		var out struct {
+			Data struct {
+				Repository struct {
+					PullRequests struct {
+						PageInfo struct {
+							HasNextPage bool    `json:"hasNextPage"`
+							EndCursor   *string `json:"endCursor"`
+						} `json:"pageInfo"`
+						Nodes []struct {
+							Number    int        `json:"number"`
+							Title     string     `json:"title"`
+							State     string     `json:"state"`
+							URL       string     `json:"url"`
+							CreatedAt time.Time  `json:"createdAt"`
+							UpdatedAt time.Time  `json:"updatedAt"`
+							ClosedAt  *time.Time `json:"closedAt"`
+							MergedAt  *time.Time `json:"mergedAt"`
+							Author    *struct {
+								Login string `json:"login"`
+							} `json:"author"`
+						} `json:"nodes"`
+					} `json:"pullRequests"`
+				} `json:"repository"`
+			} `json:"data"`
+			Errors []struct{ Message string } `json:"errors"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			return nil, err
+		}
+		if len(out.Errors) > 0 {
+			return nil, fmt.Errorf("graphql: %s", out.Errors[0].Message)
+		}
+		for _, n := range out.Data.Repository.PullRequests.Nodes {
+			pr := gh.PullRequest{
+				Number:    n.Number,
+				Title:     n.Title,
+				State:     strings.ToLower(strings.TrimSpace(n.State)),
+				HTMLURL:   n.URL,
+				CreatedAt: n.CreatedAt,
+				UpdatedAt: n.UpdatedAt,
+				ClosedAt:  n.ClosedAt,
+				MergedAt:  n.MergedAt,
+			}
+			if n.Author != nil {
+				pr.User = &gh.User{Login: n.Author.Login}
+			}
+			// Optional client-side filter by createdAt >= since
+			if since != "" {
+				if t, err := time.Parse(time.RFC3339, since); err == nil {
+					if pr.CreatedAt.Before(t) {
+						continue
+					}
+				}
+			}
+			all = append(all, pr)
+		}
+		pi := out.Data.Repository.PullRequests.PageInfo
+		if !pi.HasNextPage || pi.EndCursor == nil {
+			_ = resp.Body.Close()
+			break
+		}
+		vars["after"] = *pi.EndCursor
+		_ = resp.Body.Close()
+	}
+	slog.Info("phase.prs.fetch.done", "owner", owner, "repo", repo, "count", len(all))
+	return all, nil
+}
+
+// ListAllPullRequestReviews lists reviews for a given PR number via REST API.
+func (hc *Client) ListAllPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]gh.PullRequestReview, error) {
+	slog.Info("phase.pr.reviews.fetch.start", "owner", owner, "repo", repo, "pr", number)
+	var all []gh.PullRequestReview
+	page := 1
+	for {
+		url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/reviews?per_page=%d&page=%d", githubAPIBase, owner, repo, number, perPage, page)
+		req, err := hc.newRequest(ctx, http.MethodGet, url)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := hc.do(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		var out []struct {
+			State       string    `json:"state"`
+			SubmittedAt time.Time `json:"submitted_at"`
+			User        *struct {
+				Login string `json:"login"`
+			} `json:"user"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			_ = resp.Body.Close()
+			return nil, err
+		}
+		_ = resp.Body.Close()
+		for _, r := range out {
+			rev := gh.PullRequestReview{State: strings.ToUpper(strings.TrimSpace(r.State)), SubmittedAt: r.SubmittedAt}
+			if r.User != nil {
+				rev.User = &gh.User{Login: r.User.Login}
+			}
+			all = append(all, rev)
+		}
+		if len(out) < perPage {
+			break
+		}
+		page++
+	}
+	slog.Info("phase.pr.reviews.fetch.done", "owner", owner, "repo", repo, "pr", number, "count", len(all))
+	return all, nil
+}
+
 // ListAllRepos lists all repositories for the given organization.
 func (hc *Client) ListAllRepos(ctx context.Context, org string) ([]gh.Repo, error) {
 	slog.Info("phase.repos.fetch.start", "org", org)
