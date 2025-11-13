@@ -231,6 +231,18 @@ func Run(args []string) error {
 		return err
 	}
 
+	// Step 6: weekly PR change-requests stats (avg, median, p90) by PR open week
+	if err := writePRChangeRequestsWeekly(filepath.Join(base, "pr_change_requests_week.csv"), base); err != nil {
+		return err
+	}
+	// Step 7: per-repo PR change-requests stats (median per repo) and distribution
+	if err := writePRChangeRequestsPerRepo(filepath.Join(base, "pr_change_requests_repo.csv"), base); err != nil {
+		return err
+	}
+	if err := writePRChangeRequestsRepoDist(filepath.Join(base, "pr_change_requests_repo_dist.csv"), base); err != nil {
+		return err
+	}
+
 	slog.Info(fmt.Sprintf("calculate.done count=%d countClosed=%d count Open=%d", len(allIssues), len(closedIssues), len(openIssues)))
 	return nil
 }
@@ -1071,6 +1083,442 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 				fmt.Sprintf("%d", rec.Agg.InQA),
 				fmt.Sprintf("%d", rec.Agg.WaitingToProd),
 			}
+			if err := w.Write(row); err != nil {
+				return err
+			}
+		}
+	}
+	return w.Error()
+}
+
+// PR change-requests weekly calculation
+// Reads PRs from pr.csv and reviews from pr_review.csv in baseDir, computes per-week stats
+// for PRs opened in each ISO week: average, median, and 90th percentile of the number of
+// CHANGES_REQUESTED reviews per PR.
+func writePRChangeRequestsWeekly(outPath string, baseDir string) error {
+	// Collect PR created_at keyed by org/repo#number
+	type pr struct {
+		Org, Repo, Number string
+		CreatedAt         time.Time
+	}
+	prs := map[string]pr{}
+	// Open unified PR file
+	prPath := filepath.Join(baseDir, "pr.csv")
+	if f, err := os.Open(prPath); err == nil {
+		defer f.Close()
+		r := csv.NewReader(f)
+		head, err := r.Read()
+		if err == nil {
+			idx := indexMap(head)
+			required := []string{"org", "repo", "number", "created_at"}
+			for _, col := range required {
+				if _, ok := idx[col]; !ok {
+					return fmt.Errorf("pr.csv missing column %s", col)
+				}
+			}
+			for {
+				rec, err := r.Read()
+				if err != nil {
+					if err.Error() == "EOF" {
+						break
+					}
+					return err
+				}
+				org := rec[idx["org"]]
+				repo := rec[idx["repo"]]
+				num := rec[idx["number"]]
+				created, _ := time.Parse(time.RFC3339, rec[idx["created_at"]])
+				k := key(org, repo, num)
+				prs[k] = pr{Org: org, Repo: repo, Number: num, CreatedAt: created}
+			}
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		// If pr.csv doesn't exist, write empty output headers and return
+		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+			return err
+		}
+		f, err := os.Create(outPath)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		w := csv.NewWriter(f)
+		defer w.Flush()
+		if err := w.Write([]string{"year", "week", "repo", "avg", "median", "p90", "pr_count", "cr_total"}); err != nil {
+			return err
+		}
+		return w.Error()
+	} else {
+		return err
+	}
+	// Read reviews and count CHANGES_REQUESTED per PR
+	reqCount := map[string]int{}
+	{
+		path := filepath.Join(baseDir, "pr_review.csv")
+		f, err := os.Open(path)
+		if err == nil {
+			defer f.Close()
+			r := csv.NewReader(f)
+			head, err := r.Read()
+			if err == nil {
+				idx := indexMap(head)
+				for {
+					rec, err := r.Read()
+					if err != nil {
+						if err.Error() == "EOF" {
+							break
+						}
+						return err
+					}
+					org := rec[idx["org"]]
+					repo := rec[idx["repo"]]
+					num := rec[idx["number"]]
+					state := strings.TrimSpace(strings.ToUpper(rec[idx["state"]]))
+					if state == "CHANGES_REQUESTED" {
+						k := key(org, repo, num)
+						reqCount[k]++
+					}
+				}
+			}
+		}
+	}
+	// Group PRs by ISO week of CreatedAt and repo
+	type wk struct{ Year, Week int }
+	byWeekRepo := map[wk]map[string][]int{}
+	for _, p := range prs {
+		y, w := p.CreatedAt.UTC().ISOWeek()
+		cnt := reqCount[key(p.Org, p.Repo, p.Number)]
+		k := wk{Year: y, Week: w}
+		m := byWeekRepo[k]
+		if m == nil {
+			m = map[string][]int{}
+			byWeekRepo[k] = m
+		}
+		m[p.Repo] = append(m[p.Repo], cnt)
+	}
+	// Prepare ordered week keys
+	var weeks []wk
+	for k := range byWeekRepo {
+		weeks = append(weeks, k)
+	}
+	sort.Slice(weeks, func(i, j int) bool {
+		if weeks[i].Year != weeks[j].Year {
+			return weeks[i].Year < weeks[j].Year
+		}
+		return weeks[i].Week < weeks[j].Week
+	})
+	// Write CSV
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	if err := w.Write([]string{"year", "week", "repo", "avg", "median", "p90", "pr_count", "cr_total"}); err != nil {
+		return err
+	}
+	// Helper to write a row given values
+	writeVals := func(y int, week int, repo string, vals []int) error {
+		if len(vals) == 0 {
+			return nil
+		}
+		sort.Ints(vals)
+		var sum int
+		for _, v := range vals {
+			sum += v
+		}
+		avg := float64(sum) / float64(len(vals))
+		n := len(vals)
+		var med float64
+		if n%2 == 1 {
+			med = float64(vals[n/2])
+		} else {
+			med = (float64(vals[n/2-1]) + float64(vals[n/2])) / 2.0
+		}
+		rank := int(math.Ceil(0.9 * float64(n)))
+		if rank < 1 {
+			rank = 1
+		}
+		if rank > n {
+			rank = n
+		}
+		p90 := float64(vals[rank-1])
+		row := []string{
+			fmt.Sprintf("%d", y),
+			fmt.Sprintf("%02d", week),
+			repo,
+			fmt.Sprintf("%.6f", avg),
+			fmt.Sprintf("%.6f", med),
+			fmt.Sprintf("%.6f", p90),
+			fmt.Sprintf("%d", n),
+			fmt.Sprintf("%d", sum),
+		}
+		return w.Write(row)
+	}
+	for _, k := range weeks {
+		m := byWeekRepo[k]
+		// Collect repos sorted
+		var repos []string
+		var all []int
+		for repo, vals := range m {
+			repos = append(repos, repo)
+			all = append(all, vals...)
+		}
+		sort.Strings(repos)
+		for _, repo := range repos {
+			if err := writeVals(k.Year, k.Week, repo, m[repo]); err != nil {
+				return err
+			}
+		}
+		// Write ALL aggregate for line chart convenience
+		if err := writeVals(k.Year, k.Week, "ALL", all); err != nil {
+			return err
+		}
+	}
+	return w.Error()
+}
+
+// PR change-requests per-repo calculation
+// Reads PRs from pr.csv and reviews from pr_review.csv in baseDir, computes per-repo
+// median number of CHANGES_REQUESTED per PR and writes one line per repo.
+func writePRChangeRequestsPerRepo(outPath string, baseDir string) error {
+	// Read PRs
+	type pr struct{ Org, Repo, Number string }
+	prsByRepo := map[string][]pr{}
+	prPath := filepath.Join(baseDir, "pr.csv")
+	f, err := os.Open(prPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+				return err
+			}
+			out, err := os.Create(outPath)
+			if err != nil {
+				return err
+			}
+			defer out.Close()
+			w := csv.NewWriter(out)
+			defer w.Flush()
+			if err := w.Write([]string{"repo", "median", "pr_count", "cr_total"}); err != nil {
+				return err
+			}
+			return w.Error()
+		}
+		return err
+	}
+	defer f.Close()
+	r := csv.NewReader(f)
+	head, err := r.Read()
+	if err != nil {
+		return err
+	}
+	idx := indexMap(head)
+	for {
+		rec, err := r.Read()
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			return err
+		}
+		p := pr{Org: rec[idx["org"]], Repo: rec[idx["repo"]], Number: rec[idx["number"]]}
+		prsByRepo[p.Repo] = append(prsByRepo[p.Repo], p)
+	}
+	// Read reviews -> count CHANGES_REQUESTED per PR
+	reqCount := map[string]int{}
+	{
+		path := filepath.Join(baseDir, "pr_review.csv")
+		if rf, err := os.Open(path); err == nil {
+			defer rf.Close()
+			rr := csv.NewReader(rf)
+			head, err := rr.Read()
+			if err == nil {
+				idx := indexMap(head)
+				for {
+					rec, err := rr.Read()
+					if err != nil {
+						if err.Error() == "EOF" {
+							break
+						}
+						return err
+					}
+					state := strings.TrimSpace(strings.ToUpper(rec[idx["state"]]))
+					if state == "CHANGES_REQUESTED" {
+						k := key(rec[idx["org"]], rec[idx["repo"]], rec[idx["number"]])
+						reqCount[k]++
+					}
+				}
+			}
+		}
+	}
+	// Build counts per repo
+	type stat struct {
+		repo string
+		vals []int
+	}
+	stats := make([]stat, 0, len(prsByRepo))
+	for repo, list := range prsByRepo {
+		var vals []int
+		for _, p := range list {
+			vals = append(vals, reqCount[key(p.Org, p.Repo, p.Number)])
+		}
+		stats = append(stats, stat{repo: repo, vals: vals})
+	}
+	sort.Slice(stats, func(i, j int) bool { return stats[i].repo < stats[j].repo })
+	// Write CSV
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return err
+	}
+	out, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	w := csv.NewWriter(out)
+	defer w.Flush()
+	if err := w.Write([]string{"repo", "median", "pr_count", "cr_total"}); err != nil {
+		return err
+	}
+	for _, s := range stats {
+		vals := append([]int(nil), s.vals...)
+		sort.Ints(vals)
+		n := len(vals)
+		if n == 0 {
+			continue
+		}
+		sum := 0
+		for _, v := range vals {
+			sum += v
+		}
+		var med float64
+		if n%2 == 1 {
+			med = float64(vals[n/2])
+		} else {
+			med = (float64(vals[n/2-1]) + float64(vals[n/2])) / 2.0
+		}
+		row := []string{s.repo, fmt.Sprintf("%.6f", med), fmt.Sprintf("%d", n), fmt.Sprintf("%d", sum)}
+		if err := w.Write(row); err != nil {
+			return err
+		}
+	}
+	return w.Error()
+}
+
+// PR change-requests per-repo distribution
+// Writes rows: repo, cr (number of change requests), pr_count (number of PRs with that count)
+func writePRChangeRequestsRepoDist(outPath string, baseDir string) error {
+	// Reuse the same reading of PRs
+	type pr struct{ Org, Repo, Number string }
+	var prs []pr
+	prPath := filepath.Join(baseDir, "pr.csv")
+	f, err := os.Open(prPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+				return err
+			}
+			out, err := os.Create(outPath)
+			if err != nil {
+				return err
+			}
+			defer out.Close()
+			w := csv.NewWriter(out)
+			defer w.Flush()
+			if err := w.Write([]string{"repo", "cr", "pr_count"}); err != nil {
+				return err
+			}
+			return w.Error()
+		}
+		return err
+	}
+	defer f.Close()
+	r := csv.NewReader(f)
+	head, err := r.Read()
+	if err != nil {
+		return err
+	}
+	idx := indexMap(head)
+	for {
+		rec, err := r.Read()
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			return err
+		}
+		prs = append(prs, pr{Org: rec[idx["org"]], Repo: rec[idx["repo"]], Number: rec[idx["number"]]})
+	}
+	// Count CHANGES_REQUESTED per PR
+	reqCount := map[string]int{}
+	{
+		path := filepath.Join(baseDir, "pr_review.csv")
+		if rf, err := os.Open(path); err == nil {
+			defer rf.Close()
+			rr := csv.NewReader(rf)
+			head, err := rr.Read()
+			if err == nil {
+				idx := indexMap(head)
+				for {
+					rec, err := rr.Read()
+					if err != nil {
+						if err.Error() == "EOF" {
+							break
+						}
+						return err
+					}
+					state := strings.TrimSpace(strings.ToUpper(rec[idx["state"]]))
+					if state == "CHANGES_REQUESTED" {
+						k := key(rec[idx["org"]], rec[idx["repo"]], rec[idx["number"]])
+						reqCount[k]++
+					}
+				}
+			}
+		}
+	}
+	// Build histogram per repo
+	byRepo := map[string]map[int]int{}
+	for _, p := range prs {
+		cnt := reqCount[key(p.Org, p.Repo, p.Number)]
+		m := byRepo[p.Repo]
+		if m == nil {
+			m = map[int]int{}
+			byRepo[p.Repo] = m
+		}
+		m[cnt]++
+	}
+	// Order repos and cr keys
+	repos := make([]string, 0, len(byRepo))
+	for repo := range byRepo {
+		repos = append(repos, repo)
+	}
+	sort.Strings(repos)
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return err
+	}
+	out, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	w := csv.NewWriter(out)
+	defer w.Flush()
+	if err := w.Write([]string{"repo", "cr", "pr_count"}); err != nil {
+		return err
+	}
+	for _, repo := range repos {
+		m := byRepo[repo]
+		// order cr ascending
+		var crs []int
+		for cr := range m {
+			crs = append(crs, cr)
+		}
+		sort.Ints(crs)
+		for _, cr := range crs {
+			row := []string{repo, fmt.Sprintf("%d", cr), fmt.Sprintf("%d", m[cr])}
 			if err := w.Write(row); err != nil {
 				return err
 			}

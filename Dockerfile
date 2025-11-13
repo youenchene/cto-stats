@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1
+
+# ---- Stage 1: Build UI with pnpm ----
+FROM node:20-alpine AS ui-builder
+WORKDIR /app
+RUN corepack enable && corepack prepare pnpm@latest --activate
+COPY ui/package.json ui/pnpm-lock.yaml* ui/
+RUN cd ui && pnpm install --frozen-lockfile || pnpm install
+COPY ui/ ui/
+RUN cd ui && pnpm run build
+
+# ---- Stage 2: Build Go binary ----
+FROM golang:1.24-alpine AS go-builder
+WORKDIR /src
+RUN apk add --no-cache build-base git
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ENV CGO_ENABLED=0 GOOS=linux
+RUN go build -o /out/cto-stats ./
+
+# ---- Stage 3: Runtime ----
+FROM alpine:3.20
+WORKDIR /
+RUN apk add --no-cache ca-certificates tzdata bash
+COPY --from=go-builder /out/cto-stats /usr/local/bin/cto-stats
+COPY --from=ui-builder /app/ui/dist /ui
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY run-jobs.sh /usr/local/bin/run-jobs.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/run-jobs.sh && \
+    mkdir -p /data /config /var/log && touch /var/log/cron.log
+
+ENV CONFIG_PATH=/config/config.yml
+ENV DATA_DIR=/data
+ENV UI_DIR=/ui
+ENV IMPORT_ON_START=true
+
+EXPOSE 8080
+VOLUME ["/config", "/data"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["cto-stats", "web", "-addr", ":8080", "-data", "/data", "-ui", "/ui"]

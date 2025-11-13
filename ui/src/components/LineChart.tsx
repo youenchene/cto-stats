@@ -10,6 +10,7 @@ export function LineChart({
   yTicks = 4,
   showAxes = true,
   xTickCount,
+  showOOCMarkers = true,
 }: {
   series: Point[][]
   width?: number
@@ -18,6 +19,7 @@ export function LineChart({
   yTicks?: number
   showAxes?: boolean
   xTickCount?: number
+  showOOCMarkers?: boolean
 }) {
   const allValues = series.flat().map((p) => p.value).filter((n) => Number.isFinite(n))
   if (allValues.length === 0) return <svg width={width} height={height} />
@@ -85,7 +87,7 @@ export function LineChart({
       {/* series paths */}
       {paths}
       {/* out-of-control markers: when main > UCL or main < LCL */}
-      {series.length >= 3 && (
+      {showOOCMarkers && series.length >= 3 && (
         <g>
           {Array.from({ length: Math.max(...series.map((s) => s.length)) }, (_, i) => {
             const mainVal = series[0]?.[i]?.value
