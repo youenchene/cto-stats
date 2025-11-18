@@ -32,7 +32,14 @@
     }
   },
   "throughput": {
-    "sectionTitle": "Control Chart"
+    "sectionTitle": "Control Chart",
+    "yAxisTitle": "Number of Issues per Week",
+    "ucl": "UCL",
+    "lcl": "LCL",
+    "uclFull": "Upper Control Limit",
+    "lclFull": "Lower Control Limit",
+    "commonCauseDescription": "Points inside the LCL and UCL range is considered as common cause, which does not need to be addressed as it is a normal behavior of the system.",
+    "specialCauseDescription": "Points outside the LCL and UCL range is considered as special cause, which needs to be addressed and investigated. (Marked by a red circle)"
   },
   "chart": {
     "total": "Total"
