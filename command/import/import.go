@@ -261,12 +261,12 @@ func Run(args []string) error {
 	}
 
 	// New: fetch PRs and reviews and write to unified CSVs
-	// Prepare unified PR file: remove any previous run to avoid duplicates
 	prUnifiedPath := "data/pr.csv"
-	_ = os.Remove(prUnifiedPath)
-	// Also reset reviews file for a clean run
 	rvUnifiedPath := "data/pr_review.csv"
-	_ = os.Remove(rvUnifiedPath)
+
+	var allPRs []gh.PullRequest
+	var allReviews []gh.PullRequestReview
+
 	for _, r := range repos {
 		if *repoFilter != "" && !allowedRepos[r.Name] {
 			continue
@@ -277,11 +277,14 @@ func Run(args []string) error {
 			slog.Warn("phase.prs.fetch.error", "owner", r.Owner.Login, "repo", r.Name, "error", err)
 			continue
 		}
-		// Append to unified PR CSV with repo column
-		if err := ccsv.AppendPullRequests(prUnifiedPath, *org, r.Name, prs); err != nil {
-			slog.Warn("phase.prs.csv.error", "repo", r.Name, "error", err)
+		// Collect all PRs
+		for i := range prs {
+			prs[i].Org = *org
+			prs[i].Repo = r.Name
 		}
-		// For each PR, fetch reviews and append to unified pr_review.csv
+		allPRs = append(allPRs, prs...)
+
+		// For each PR, fetch reviews and collect them
 		for _, pr := range prs {
 			reviews, err := ghc.ListAllPullRequestReviews(ctx, r.Owner.Login, r.Name, pr.Number)
 			if err != nil {
@@ -291,12 +294,23 @@ func Run(args []string) error {
 			if len(reviews) == 0 {
 				continue
 			}
-			if err := ccsv.AppendPullRequestReviews(rvUnifiedPath, *org, r.Name, pr.Number, reviews); err != nil {
-				slog.Warn("phase.pr.reviews.csv.error", "repo", r.Name, "pr", pr.Number, "error", err)
+			// Collect all reviews
+			for i := range reviews {
+				reviews[i].Org = *org
+				reviews[i].Repo = r.Name
+				reviews[i].PullRequestNumber = pr.Number
 			}
+			allReviews = append(allReviews, reviews...)
 		}
 	}
 
+	// Write all collected PRs and reviews at once
+	if err := ccsv.WritePullRequests(prUnifiedPath, allPRs); err != nil {
+		slog.Warn("phase.prs.csv.error", "error", err)
+	}
+	if err := ccsv.WritePullRequestReviews(rvUnifiedPath, allReviews); err != nil {
+		slog.Warn("phase.pr.reviews.csv.error", "error", err)
+	}
 	slog.Info("import.done", "reports", len(reports))
 	return nil
 }
