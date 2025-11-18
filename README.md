@@ -61,6 +61,10 @@ The measurable output rate of a system over time, analyzed within statistically 
 
 More information here : https://deming.org/a-beginners-guide-to-control-charts/
 
+### Change Request count per week (stacked by repo)
+
+Basic indicator to identify Change request event per week on pull requests.
+
 ## How to run - user mode
 
 ### Prequisites
