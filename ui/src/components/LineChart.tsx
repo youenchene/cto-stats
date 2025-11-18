@@ -11,6 +11,10 @@ export function LineChart({
   showAxes = true,
   xTickCount,
   showOOCMarkers = true,
+  yAxisTitle,
+  showBandLabels = true,
+  uclLabel = 'UCL',
+  lclLabel = 'LCL',
 }: {
   series: Point[][]
   width?: number
@@ -20,6 +24,10 @@ export function LineChart({
   showAxes?: boolean
   xTickCount?: number
   showOOCMarkers?: boolean
+  yAxisTitle?: string
+  showBandLabels?: boolean
+  uclLabel?: string
+  lclLabel?: string
 }) {
   const allValues = series.flat().map((p) => p.value).filter((n) => Number.isFinite(n))
   if (allValues.length === 0) return <svg width={width} height={height} />
@@ -27,11 +35,14 @@ export function LineChart({
   const max = Math.max(...allValues)
   const rng = max - min || 1
   const count = Math.max(0, Math.max(...series.map((s) => s.length)))
-  const padding = 32
-  const innerW = width - padding * 2
+  const basePadding = 32
+  // Add some extra left padding when a Y-axis title is present so it doesn't overlap ticks
+  const leftPad = basePadding + (yAxisTitle ? 28 : 0)
+  const padding = basePadding
+  const innerW = width - leftPad - padding
   const innerH = height - padding * 2
 
-  const x = (i: number) => padding + (count <= 1 ? innerW / 2 : (i * innerW) / (count - 1))
+  const x = (i: number) => leftPad + (count <= 1 ? innerW / 2 : (i * innerW) / (count - 1))
   const y = (v: number) => padding + (innerH - ((v - min) / rng) * innerH)
 
   // dynamic x ticks; if xTickCount provided, force that count; otherwise 5 to 10 depending on width
@@ -61,14 +72,27 @@ export function LineChart({
     <svg width={width} height={height} className="chart-grayscale">
       {showAxes && (
         <g>
+          {/* optional Y-axis title */}
+          {yAxisTitle && (
+            <text
+              x={12}
+              y={height / 2}
+              transform={`rotate(-90 12 ${height / 2})`}
+              textAnchor="middle"
+              fontSize="11"
+              fill="#111827"
+            >
+              {yAxisTitle}
+            </text>
+          )}
           {/* axes */}
-          <line x1={padding} y1={padding} x2={padding} y2={height - padding} stroke="#e5e7eb" />
-          <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#e5e7eb" />
+          <line x1={leftPad} y1={padding} x2={leftPad} y2={height - padding} stroke="#e5e7eb" />
+          <line x1={leftPad} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#e5e7eb" />
           {/* y ticks */}
           {yTickVals.map((v, i) => (
             <g key={i}>
-              <line x1={padding - 4} y1={y(v)} x2={padding} y2={y(v)} stroke="#e5e7eb" />
-              <text x={8} y={y(v)} textAnchor="start" alignmentBaseline="middle" fontSize="10" fill="#6b7280">
+              <line x1={leftPad - 4} y1={y(v)} x2={leftPad} y2={y(v)} stroke="#e5e7eb" />
+              <text x={leftPad - 4 - 6} y={y(v)} textAnchor="end" alignmentBaseline="middle" fontSize="10" fill="#6b7280">
                 {v.toFixed(0)}
               </text>
             </g>
@@ -82,6 +106,109 @@ export function LineChart({
               </text>
             </g>
           ))}
+        </g>
+      )}
+      {/* background bands: light blue/cyan between LCL and UCL, light red outside */}
+      {series.length >= 3 && (
+        <g>
+          {(() => {
+            const lcl = series[1]
+            const ucl = series[2]
+            // helpers to build polygons for contiguous finite ranges
+            const isFiniteAt = (s: Point[], i: number) => Number.isFinite(s?.[i]?.value)
+            const buildBandPolys = () => {
+              const polys: string[] = []
+              let start = -1
+              const last = Math.max(lcl.length, ucl.length) - 1
+              for (let i = 0; i <= last; i++) {
+                const ok = isFiniteAt(lcl, i) && isFiniteAt(ucl, i)
+                if (ok && start === -1) start = i
+                if ((!ok || i === last) && start !== -1) {
+                  const end = ok && i === last ? i : i - 1
+                  // build polygon from UCL (start->end) then back on LCL (end->start)
+                  const parts: string[] = []
+                  parts.push(`M${x(start).toFixed(2)},${y(ucl[start].value).toFixed(2)}`)
+                  for (let k = start + 1; k <= end; k++) {
+                    parts.push(`L${x(k).toFixed(2)},${y(ucl[k].value).toFixed(2)}`)
+                  }
+                  for (let k = end; k >= start; k--) {
+                    parts.push(`L${x(k).toFixed(2)},${y(lcl[k].value).toFixed(2)}`)
+                  }
+                  parts.push('Z')
+                  polys.push(parts.join(' '))
+                  start = -1
+                }
+              }
+              return polys
+            }
+            const buildTopPolys = () => {
+              const polys: string[] = []
+              let start = -1
+              const last = ucl.length - 1
+              for (let i = 0; i <= last; i++) {
+                const ok = isFiniteAt(ucl, i)
+                if (ok && start === -1) start = i
+                if ((!ok || i === last) && start !== -1) {
+                  const end = ok && i === last ? i : i - 1
+                  const parts: string[] = []
+                  // along top edge from start to end
+                  parts.push(`M${x(start).toFixed(2)},${padding.toFixed(2)}`)
+                  parts.push(`L${x(end).toFixed(2)},${padding.toFixed(2)}`)
+                  // back along UCL from end to start
+                  for (let k = end; k >= start; k--) {
+                    parts.push(`L${x(k).toFixed(2)},${y(ucl[k].value).toFixed(2)}`)
+                  }
+                  parts.push('Z')
+                  polys.push(parts.join(' '))
+                  start = -1
+                }
+              }
+              return polys
+            }
+            const buildBottomPolys = () => {
+              const polys: string[] = []
+              let start = -1
+              const last = lcl.length - 1
+              for (let i = 0; i <= last; i++) {
+                const ok = isFiniteAt(lcl, i)
+                if (ok && start === -1) start = i
+                if ((!ok || i === last) && start !== -1) {
+                  const end = ok && i === last ? i : i - 1
+                  const parts: string[] = []
+                  // along bottom edge from start to end
+                  const bottom = (height - padding).toFixed(2)
+                  parts.push(`M${x(start).toFixed(2)},${bottom}`)
+                  parts.push(`L${x(end).toFixed(2)},${bottom}`)
+                  // back along LCL from end to start
+                  for (let k = end; k >= start; k--) {
+                    parts.push(`L${x(k).toFixed(2)},${y(lcl[k].value).toFixed(2)}`)
+                  }
+                  parts.push('Z')
+                  polys.push(parts.join(' '))
+                  start = -1
+                }
+              }
+              return polys
+            }
+
+            const greenPolys = buildBandPolys()
+            const topRedPolys = buildTopPolys()
+            const bottomRedPolys = buildBottomPolys()
+
+            return (
+              <>
+                {topRedPolys.map((d, i) => (
+                  <path key={`rt-${i}`} d={d} fill="#EF4444" fillOpacity={0.06} stroke="none" />
+                ))}
+                {greenPolys.map((d, i) => (
+                  <path key={`gn-${i}`} d={d} fill="#06B6D4" fillOpacity={0.06} stroke="none" />
+                ))}
+                {bottomRedPolys.map((d, i) => (
+                  <path key={`rb-${i}`} d={d} fill="#EF4444" fillOpacity={0.06} stroke="none" />
+                ))}
+              </>
+            )
+          })()}
         </g>
       )}
       {/* series paths */}
@@ -113,6 +240,56 @@ export function LineChart({
             }
             return null
           })}
+        </g>
+      )}
+      {/* UCL/LCL labels at right edge near the last points */}
+      {showBandLabels && series.length >= 3 && (
+        <g>
+          {(() => {
+            // helper to find the last finite value index in a series
+            const lastFiniteIndex = (s: Point[]) => {
+              for (let i = s.length - 1; i >= 0; i--) {
+                if (Number.isFinite(s[i]?.value)) return i
+              }
+              return -1
+            }
+            const lclSeries = series[1] || []
+            const uclSeries = series[2] || []
+            const li = lastFiniteIndex(lclSeries)
+            const ui = lastFiniteIndex(uclSeries)
+            const nodes: React.ReactNode[] = []
+            if (ui >= 0) {
+              const xv = Math.min(x(ui) + 6, width - padding - 2)
+              const yv = y(uclSeries[ui].value)
+              nodes.push(
+                <text
+                  key="ucl-label"
+                  x={xv}
+                  y={Math.max(padding + 10, yv - 6)}
+                  fontSize={10}
+                  fill="#374151"
+                >
+                  {uclLabel}
+                </text>
+              )
+            }
+            if (li >= 0) {
+              const xv = Math.min(x(li) + 6, width - padding - 2)
+              const yv = y(lclSeries[li].value)
+              nodes.push(
+                <text
+                  key="lcl-label"
+                  x={xv}
+                  y={Math.min(height - padding - 4, Math.max(padding + 10, yv - 6))}
+                  fontSize={10}
+                  fill="#374151"
+                >
+                  {lclLabel}
+                </text>
+              )
+            }
+            return nodes
+          })()}
         </g>
       )}
     </svg>

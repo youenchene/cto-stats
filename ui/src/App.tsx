@@ -365,8 +365,24 @@ function ThroughputBlock() {
       <Card>
         <CardContent>
           <div ref={containerRef} className="w-full">
-            <LineChart series={[main, lcl, ucl]} width={Math.max(320, containerWidth)} height={260} colors={["#000", "#9ca3af", "#9ca3af"]} xTickCount={5} />
+            <LineChart
+              series={[main, lcl, ucl]}
+              width={Math.max(320, containerWidth)}
+              height={260}
+              colors={["#000", "#9ca3af", "#9ca3af"]}
+              xTickCount={5}
+              yAxisTitle={t('throughput.yAxisTitle')}
+              uclLabel={t('throughput.ucl')}
+              lclLabel={t('throughput.lcl')}
+            />
           </div>
+          {/* UCL/LCL definitions under the chart */}
+          <p className="mt-2 text-xs text-gray-500">
+            <span className="font-medium">{t('throughput.ucl')}</span> = {t('throughput.uclFull')};{' '}
+            <span className="font-medium">{t('throughput.lcl')}</span> = {t('throughput.lclFull')}
+          </p>
+          <p className="mt-2 text-xs text-gray-500">{t('throughput.commonCauseDescription')}</p>
+            <p className="mt-2 text-xs text-gray-500">{t('throughput.specialCauseDescription')}</p>
         </CardContent>
       </Card>
     </section>
