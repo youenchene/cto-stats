@@ -6,10 +6,12 @@ import (
 	ccsv "cto-stats/connectors/csv"
 	cg "cto-stats/connectors/github"
 	gh "cto-stats/domain/github"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -34,6 +36,53 @@ type ProjectMoveEvent = gh.ProjectMoveEvent
 type IssueReport = gh.IssueReport
 
 type CurrentProject = gh.CurrentProject
+
+// checkpoints stores per-repo import progress to allow incremental runs.
+type checkpoints struct {
+	Repos map[string]repoCheckpoint `json:"repos"`
+}
+
+type repoCheckpoint struct {
+	IssuesAfter string `json:"issues_after,omitempty"`
+}
+
+func loadCheckpoints(path string) (*checkpoints, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		// If file doesn't exist, return empty
+		return &checkpoints{Repos: map[string]repoCheckpoint{}}, nil
+	}
+	defer f.Close()
+	var cp checkpoints
+	if err := json.NewDecoder(f).Decode(&cp); err != nil {
+		return &checkpoints{Repos: map[string]repoCheckpoint{}}, nil
+	}
+	if cp.Repos == nil {
+		cp.Repos = map[string]repoCheckpoint{}
+	}
+	return &cp, nil
+}
+
+func saveCheckpoints(path string, cp *checkpoints) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(cp); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
 
 // Run executes the import subcommand. It expects flag arguments like: -org, -since, -repo.
 func Run(args []string) error {
@@ -93,17 +142,42 @@ func Run(args []string) error {
 		return err
 	}
 
+	// Load checkpoints to make the import incremental by default
+	cpPath := "./data/checkpoints.json"
+	cp, _ := loadCheckpoints(cpPath)
+
 	var reports []IssueReport
 	for _, r := range repos {
 		if *repoFilter != "" && !allowedRepos[r.Name] {
 			continue
 		}
-		slog.Info("phase.issues.import.start", "owner", r.Owner.Login, "repo", r.Name, "since", *since)
-		issues, err := ghc.ListAllIssues(ctx, r.Owner.Login, r.Name, *since)
+		key := r.Owner.Login + "/" + r.Name
+		after := ""
+		if rp, ok := cp.Repos[key]; ok {
+			if strings.TrimSpace(rp.IssuesAfter) != "" {
+				after = rp.IssuesAfter
+				slog.Info("checkpoint.issues.cursor.resume", "repo", key, "after", after)
+			}
+		}
+		slog.Info("phase.issues.import.start", "owner", r.Owner.Login, "repo", r.Name, "since", *since, "after", after)
+		issues, endCursor, err := ghc.ListAllIssues(ctx, r.Owner.Login, r.Name, *since, after)
 		if err != nil {
 			slog.Error("phase.issues.fetch.error", "owner", r.Owner.Login, "repo", r.Name, "error", err)
 			fmt.Fprintf(os.Stderr, "error listing issues for %s/%s: %v\n", r.Owner.Login, r.Name, err)
 			continue
+		}
+		if endCursor != nil {
+			if cp.Repos == nil {
+				cp.Repos = map[string]repoCheckpoint{}
+			}
+			rc := cp.Repos[key]
+			rc.IssuesAfter = *endCursor
+			cp.Repos[key] = rc
+			if err := saveCheckpoints(cpPath, cp); err != nil {
+				slog.Warn("checkpoint.save.error", "path", cpPath, "error", err)
+			} else {
+				slog.Info("checkpoint.issues.cursor.saved", "repo", key, "after", *endCursor)
+			}
 		}
 		slog.Info("phase.issues.import.fetched", "owner", r.Owner.Login, "repo", r.Name, "count", len(issues))
 		for _, is := range issues {

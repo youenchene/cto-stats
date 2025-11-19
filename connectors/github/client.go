@@ -79,6 +79,43 @@ func (hc *Client) do(ctx context.Context, req *http.Request) (*http.Response, er
 			return nil, errors.New("rate limited by GitHub API")
 		}
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			// Simple rate-aware pacing without concurrency: after each successful response,
+			// inspect X-RateLimit headers and optionally sleep to avoid hitting the cap.
+			remainingStr := resp.Header.Get("X-RateLimit-Remaining")
+			resetStr := resp.Header.Get("X-RateLimit-Reset")
+			if remainingStr != "" && resetStr != "" {
+				if rem, err1 := strconv.Atoi(remainingStr); err1 == nil {
+					if sec, err2 := strconv.ParseInt(resetStr, 10, 64); err2 == nil {
+						resetAt := time.Unix(sec, 0)
+						if rem <= 0 {
+							// Out of requests in this window; wait until reset.
+							sleep := time.Until(resetAt) + rateSafetyMargin
+							if sleep > 0 {
+								slog.Warn("rate.pacing.sleep.empty", "sleep", sleep, "resetAt", resetAt)
+								time.Sleep(sleep)
+							}
+						} else if rem < 100 {
+							// Low budget remaining; spread remaining calls evenly until reset.
+							// Compute a small delay = remaining window time / remaining requests, plus tiny jitter.
+							window := time.Until(resetAt)
+							if window > 0 {
+								perReq := window / time.Duration(rem+1)
+								// Cap to a reasonable max to avoid overly long sleeps on long windows.
+								if perReq > 2*time.Second {
+									perReq = 2 * time.Second
+								}
+								// Add small jitter up to 100ms to de-sync if multiple processes are running.
+								jitter := time.Duration(time.Now().UnixNano() % int64(100*time.Millisecond))
+								sleep := perReq + jitter/10
+								if sleep > 0 {
+									slog.Info("rate.pacing.sleep", "sleep", sleep, "remaining", rem, "resetAt", resetAt)
+									time.Sleep(sleep)
+								}
+							}
+						}
+					}
+				}
+			}
 			return resp, nil
 		}
 		// read body for diagnostics and return error
@@ -91,6 +128,43 @@ func (hc *Client) do(ctx context.Context, req *http.Request) (*http.Response, er
 func drainAndClose(rc io.ReadCloser) error {
 	_, _ = io.Copy(io.Discard, rc)
 	return rc.Close()
+}
+
+// sleepUntilResetIfRateLimited checks GraphQL error messages for rate limit hints
+// and sleeps until the reset time advertised by GitHub headers. The sleep time
+// is capped to 1 hour as requested. Returns true if it slept and caller should retry.
+func sleepUntilResetIfRateLimited(resp *http.Response, messages []string) bool {
+	if resp == nil {
+		return false
+	}
+	rateLimited := false
+	for _, m := range messages {
+		lm := strings.ToLower(m)
+		if strings.Contains(lm, "rate limit") || strings.Contains(lm, "api rate limit exceeded") {
+			rateLimited = true
+			break
+		}
+	}
+	if !rateLimited {
+		return false
+	}
+	// Default wait to 1h cap unless header gives a nearer reset
+	wait := 1 * time.Hour
+	if reset := resp.Header.Get("X-RateLimit-Reset"); reset != "" {
+		if sec, err := strconv.ParseInt(reset, 10, 64); err == nil {
+			resetAt := time.Unix(sec, 0)
+			until := time.Until(resetAt) + rateSafetyMargin
+			if until > 0 && until < wait {
+				wait = until
+			}
+			if until <= 0 {
+				wait = 5 * time.Second
+			}
+		}
+	}
+	slog.Warn("graphql.rate.limit.sleep", "sleep", wait, "resetAt", resp.Header.Get("X-RateLimit-Reset"))
+	time.Sleep(wait)
+	return true
 }
 
 // ListAllPullRequests lists PRs for a repo, optionally filtered by created since (ISO8601 string). Uses GraphQL.
@@ -159,6 +233,16 @@ func (hc *Client) ListAllPullRequests(ctx context.Context, owner, repo, since st
 			return nil, err
 		}
 		if len(out.Errors) > 0 {
+			// Handle GraphQL rate limit (HTTP 200 + errors)
+			msgs := make([]string, 0, len(out.Errors))
+			for _, e := range out.Errors {
+				msgs = append(msgs, e.Message)
+			}
+			if sleepUntilResetIfRateLimited(resp, msgs) {
+				_ = resp.Body.Close()
+				// retry same page after sleep
+				continue
+			}
 			return nil, fmt.Errorf("graphql: %s", out.Errors[0].Message)
 		}
 		for _, n := range out.Data.Repository.PullRequests.Nodes {
@@ -301,10 +385,21 @@ func (hc *Client) ListAllRepos(ctx context.Context, org string) ([]gh.Repo, erro
 		if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&out); err != nil {
 			return nil, err
 		}
-		_ = resp.Body.Close()
+		// Handle GraphQL errors possibly indicating a rate limit
 		if len(out.Errors) > 0 {
+			msgs := make([]string, 0, len(out.Errors))
+			for _, e := range out.Errors {
+				msgs = append(msgs, e.Message)
+			}
+			if sleepUntilResetIfRateLimited(resp, msgs) {
+				_ = resp.Body.Close()
+				// retry same page after sleeping
+				continue
+			}
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("graphql: %s", out.Errors[0].Message)
 		}
+		_ = resp.Body.Close()
 		for _, n := range out.Data.Organization.Repositories.Nodes {
 			all = append(all, gh.Repo{Name: n.Name, Private: n.IsPrivate, Owner: struct {
 				Login string `json:"login"`
@@ -321,7 +416,9 @@ func (hc *Client) ListAllRepos(ctx context.Context, org string) ([]gh.Repo, erro
 }
 
 // ListAllIssues lists all issues for a repo, optionally since a time.
-func (hc *Client) ListAllIssues(ctx context.Context, owner, repo, since string) ([]gh.Issue, error) {
+// ListAllIssues lists all issues for a repo, optionally since a time and starting after a given cursor.
+// It returns the collected issues and the last endCursor so callers can persist checkpoints.
+func (hc *Client) ListAllIssues(ctx context.Context, owner, repo, since string, after string) ([]gh.Issue, *string, error) {
 	slog.Info("phase.issues.fetch.start", "owner", owner, "repo", repo, "since", since)
 	var all []gh.Issue
 	query := `query($owner:String!, $name:String!, $pageSize:Int!, $after:String, $since:DateTime){
@@ -348,18 +445,22 @@ func (hc *Client) ListAllIssues(ctx context.Context, owner, repo, since string) 
 	if since != "" {
 		vars["since"] = since
 	}
+	if strings.TrimSpace(after) != "" {
+		vars["after"] = after
+	}
+	var lastCursor *string
 	for {
 		body, _ := json.Marshal(map[string]any{"query": query, "variables": vars})
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, githubGraphQLEndpoint, bytes.NewReader(body))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+hc.token)
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := hc.do(ctx, req)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		var out struct {
 			Data struct {
@@ -401,10 +502,19 @@ func (hc *Client) ListAllIssues(ctx context.Context, owner, repo, since string) 
 		}
 		// Decode directly from body
 		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if len(out.Errors) > 0 {
-			return nil, fmt.Errorf("graphql: %s", out.Errors[0].Message)
+			msgs := make([]string, 0, len(out.Errors))
+			for _, e := range out.Errors {
+				msgs = append(msgs, e.Message)
+			}
+			if sleepUntilResetIfRateLimited(resp, msgs) {
+				_ = resp.Body.Close()
+				// retry same page after sleeping
+				continue
+			}
+			return nil, nil, fmt.Errorf("graphql: %s", out.Errors[0].Message)
 		}
 		for _, n := range out.Data.Repository.Issues.Nodes {
 			iss := gh.Issue{
@@ -431,13 +541,21 @@ func (hc *Client) ListAllIssues(ctx context.Context, owner, repo, since string) 
 			all = append(all, iss)
 		}
 		pi := out.Data.Repository.Issues.PageInfo
+		if pi.EndCursor != nil {
+			// remember the most recent cursor seen
+			lastCursor = new(string)
+			*lastCursor = *pi.EndCursor
+		}
 		if !pi.HasNextPage || pi.EndCursor == nil {
-			break
+			slog.Info("phase.issues.fetch.done", "owner", owner, "repo", repo, "count", len(all))
+			return all, lastCursor, nil
 		}
 		vars["after"] = *pi.EndCursor
 	}
+	// Unreachable, but keep compiler happy
+	// slog.Info placed above on return; here as a fallback
 	slog.Info("phase.issues.fetch.done", "owner", owner, "repo", repo, "count", len(all))
-	return all, nil
+	return all, nil, nil
 }
 
 // ListAllTimeline lists timeline events for a given issue number.
@@ -513,10 +631,20 @@ func (hc *Client) ListAllTimeline(ctx context.Context, owner, repo string, numbe
 		if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&out); err != nil {
 			return nil, err
 		}
-		_ = resp.Body.Close()
 		if len(out.Errors) > 0 {
+			msgs := make([]string, 0, len(out.Errors))
+			for _, e := range out.Errors {
+				msgs = append(msgs, e.Message)
+			}
+			if sleepUntilResetIfRateLimited(resp, msgs) {
+				_ = resp.Body.Close()
+				// retry same page after sleeping
+				continue
+			}
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("graphql: %s", out.Errors[0].Message)
 		}
+		_ = resp.Body.Close()
 		for _, n := range out.Data.Repository.Issue.TimelineItems.Nodes {
 			ev := gh.TimelineEvent{}
 			ev.CreatedAt = n.CreatedAt
