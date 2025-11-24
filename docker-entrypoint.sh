@@ -16,7 +16,7 @@ chmod 600 "$ENV_FILE"
 CRON_FILE=/etc/crontabs/root
 mkdir -p /etc/crontabs
 : > "$CRON_FILE"
-echo "0 5 * * * /usr/local/bin/run-jobs.sh >> /proc/1/fd/1 2>&1" >> "$CRON_FILE"
+echo "0 1 * * * /usr/local/bin/run-jobs.sh >> /proc/1/fd/1 2>&1" >> "$CRON_FILE"
 chmod 600 "$CRON_FILE"
 
 # Start cron in background (busybox crond)
