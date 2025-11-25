@@ -3,6 +3,7 @@ package calculate
 import (
 	"encoding/csv"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"math"
@@ -71,179 +72,214 @@ type calculatedIssue struct {
 
 // Run executes the calculate command
 func Run(args []string) error {
+	fs := flag.NewFlagSet("calculate", flag.ContinueOnError)
+	issuesScope := fs.Bool("issues", false, "Process issues scope: calculate issue-based KPIs (cycle time, throughput, stocks)")
+	prScope := fs.Bool("pr", false, "Process pull-requests scope: change-requests KPIs only")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	// Backward compatibility: if no scope specified, process both
+	if !*issuesScope && !*prScope {
+		*issuesScope = true
+		*prScope = true
+	}
+
 	// Read config path from environment variable CONFIG_PATH; default to ./config.yml
 	cfgPath := os.Getenv("CONFIG_PATH")
 	if cfgPath == "" {
 		cfgPath = "./config.yml"
 	}
-	// For calculate, a config file is required
-	if _, err := os.Stat(cfgPath); err != nil {
-		return fmt.Errorf("calculate: config file required (set CONFIG_PATH or provide ./config.yml): %w", err)
-	}
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		return fmt.Errorf("calculate: failed to load config: %w", err)
-	}
-	// Build a project lookup by ID for quick access
-	projCfgByID := map[string]config.Project{}
-	for _, p := range cfg.GitHub.Projects {
-		projCfgByID[p.ID] = p
+
+	var projCfgByID map[string]config.Project
+	projCfgByID = map[string]config.Project{}
+	if *issuesScope {
+		// For issues calculations, a config file is required for project mappings
+		if _, err := os.Stat(cfgPath); err != nil {
+			return fmt.Errorf("calculate: config file required for --issues (set CONFIG_PATH or provide ./config.yml): %w", err)
+		}
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return fmt.Errorf("calculate: failed to load config: %w", err)
+		}
+		// Build a project lookup by ID for quick access
+		for _, p := range cfg.GitHub.Projects {
+			projCfgByID[p.ID] = p
+		}
 	}
 
 	// Read inputs from data/
 	base := "data"
-	issues, err := readIssues(filepath.Join(base, "issue.csv"))
-	if err != nil {
-		return err
-	}
-	statusByID, err := readStatus(filepath.Join(base, "issue_status_event.csv"))
-	if err != nil {
-		return err
-	}
-	projByID, err := readProject(filepath.Join(base, "issue_project_event.csv"))
-	if err != nil {
-		return err
+
+	var (
+		issues     map[string]issueRow
+		statusByID map[string][]statusEventRow
+		projByID   map[string][]projectEventRow
+	)
+	var err error
+	if *issuesScope {
+		issues, err = readIssues(filepath.Join(base, "issue.csv"))
+		if err != nil {
+			return err
+		}
+		statusByID, err = readStatus(filepath.Join(base, "issue_status_event.csv"))
+		if err != nil {
+			return err
+		}
+		projByID, err = readProject(filepath.Join(base, "issue_project_event.csv"))
+		if err != nil {
+			return err
+		}
 	}
 
 	// Build output
 	var allIssues []calculatedIssue
-	for id, is := range issues {
-		projEvents := projByID[id]
-		st := statusByID[id]
+	if *issuesScope {
+		for id, is := range issues {
+			projEvents := projByID[id]
+			st := statusByID[id]
 
-		row := calculatedIssue{
-			ID:               id,
-			Name:             is.Title,
-			CreationDatetime: is.CreatedAt,
-			Bug:              is.IsBug,
-			Type:             is.Type,
-		}
-		// Determine project on first project event if any
-		var pid, pname string
-		if len(projEvents) > 0 {
-			pid = projEvents[0].ProjectID
-			pname = projEvents[0].ProjectName
-			row.ProjectID = pid
-			row.ProjectName = pname
-		}
-		// Apply config filters if project known and present in config
-		if pc, ok := projCfgByID[pid]; ok {
-			if pc.Exclude {
-				continue
+			row := calculatedIssue{
+				ID:               id,
+				Name:             is.Title,
+				CreationDatetime: is.CreatedAt,
+				Bug:              is.IsBug,
+				Type:             is.Type,
 			}
-			if len(pc.Types) > 0 {
-				// case-insensitive compare
-				allowed := false
-				for _, t := range pc.Types {
-					if strings.EqualFold(strings.TrimSpace(t), strings.TrimSpace(is.Type)) {
-						allowed = true
-						break
-					}
-				}
-				if !allowed {
+			// Determine project on first project event if any
+			var pid, pname string
+			if len(projEvents) > 0 {
+				pid = projEvents[0].ProjectID
+				pname = projEvents[0].ProjectName
+				row.ProjectID = pid
+				row.ProjectName = pname
+			}
+			// Apply config filters if project known and present in config
+			if pc, ok := projCfgByID[pid]; ok {
+				if pc.Exclude {
 					continue
 				}
-			}
-			// Use configured columns for stage timestamps
-			choose := func(cols []string) *time.Time {
-				if len(cols) > 0 {
-					return firstMoveToAny(projEvents, cols)
+				if len(pc.Types) > 0 {
+					// case-insensitive compare
+					allowed := false
+					for _, t := range pc.Types {
+						if strings.EqualFold(strings.TrimSpace(t), strings.TrimSpace(is.Type)) {
+							allowed = true
+							break
+						}
+					}
+					if !allowed {
+						continue
+					}
 				}
-				return nil
-			}
-			row.LeadTimeStartDatetime = choose(pc.LeadTimeColumns)
-			row.CycleTimeStartDatetime = choose(pc.CycleTimeColumns)
-			row.PutInReadyStartDatetime = choose(pc.PutInReadyColumns)
+				// Use configured columns for stage timestamps
+				choose := func(cols []string) *time.Time {
+					if len(cols) > 0 {
+						return firstMoveToAny(projEvents, cols)
+					}
+					return nil
+				}
+				row.LeadTimeStartDatetime = choose(pc.LeadTimeColumns)
+				row.CycleTimeStartDatetime = choose(pc.CycleTimeColumns)
+				row.PutInReadyStartDatetime = choose(pc.PutInReadyColumns)
 
-			row.DevStartDatetime = choose(pc.DevStartColumns)
-			row.ReviewStartDatetime = choose(pc.ReviewStartColumns)
-			row.QAStartDatetime = choose(pc.QAStartColumns)
-			row.WaitingToPodStartDatetime = choose(pc.WaitingToProdStartCols)
-			// End datetime: by default earliest of status closed and configured inprod columns (e.g., Archive/Done)
-			var endCandidates []*time.Time
-			if e := choose(pc.InProdStartColumns); e != nil {
-				endCandidates = append(endCandidates, e)
-			}
-			// closed status
-			if ev, ok := lo.Find(st, func(s statusEventRow) bool { return s.Type == "closed" }); ok {
-				end := ev.At
-				endCandidates = append(endCandidates, &end)
-			}
-			row.EndDatetime = earliest(endCandidates)
-			if row.EndDatetime != nil {
+				row.DevStartDatetime = choose(pc.DevStartColumns)
+				row.ReviewStartDatetime = choose(pc.ReviewStartColumns)
+				row.QAStartDatetime = choose(pc.QAStartColumns)
+				row.WaitingToPodStartDatetime = choose(pc.WaitingToProdStartCols)
+				// End datetime: by default earliest of status closed and configured inprod columns (e.g., Archive/Done)
+				var endCandidates []*time.Time
+				if e := choose(pc.InProdStartColumns); e != nil {
+					endCandidates = append(endCandidates, e)
+				}
+				// closed status
+				if ev, ok := lo.Find(st, func(s statusEventRow) bool { return s.Type == "closed" }); ok {
+					end := ev.At
+					endCandidates = append(endCandidates, &end)
+				}
+				row.EndDatetime = earliest(endCandidates)
+				if row.EndDatetime != nil {
+					if row.CycleTimeStartDatetime == nil {
+						row.CycleTimeStartDatetime = row.LeadTimeStartDatetime
+					}
+					if row.DevStartDatetime == nil {
+						row.DevStartDatetime = row.LeadTimeStartDatetime
+					}
+				}
+			} else {
+				slog.Info("calculate.project_unknown", "issue_id", id, "id", pid, "name", pname, "type", is.Type, "events", projEvents, "status", st)
+				// No matching project in config: fallback to legacy behavior
+				row.LeadTimeStartDatetime = firstMoveToAny(projEvents, []string{"Backlog", "Ready"})
+				row.CycleTimeStartDatetime = firstMoveToAny(projEvents, []string{"In Progress", "In progress"})
 				if row.CycleTimeStartDatetime == nil {
-					row.CycleTimeStartDatetime = row.LeadTimeStartDatetime
+					row.CycleTimeStartDatetime = firstMoveToAny(projEvents, []string{"Backlog", "Ready"})
 				}
+				row.DevStartDatetime = firstMoveToAny(projEvents, []string{"In Progress", "In progress"})
 				if row.DevStartDatetime == nil {
-					row.DevStartDatetime = row.LeadTimeStartDatetime
+					row.DevStartDatetime = firstMoveToAny(projEvents, []string{"Backlog", "Ready"})
 				}
+				row.ReviewStartDatetime = firstMoveToAny(projEvents, []string{"In review", "In Review"})
+				row.QAStartDatetime = nil
+				row.PutInReadyStartDatetime = firstMoveToAny(projEvents, []string{"Ready", "In Ready", "Ready for Dev"})
+				row.WaitingToPodStartDatetime = firstMoveTo(projEvents, "Done")
+				row.EndDatetime = computeEnd(st, projEvents)
 			}
-		} else {
-			slog.Info("calculate.project_unknown", "issue_id", id, "id", pid, "name", pname, "type", is.Type, "events", projEvents, "status", st)
-			// No matching project in config: fallback to legacy behavior
-			row.LeadTimeStartDatetime = firstMoveToAny(projEvents, []string{"Backlog", "Ready"})
-			row.CycleTimeStartDatetime = firstMoveToAny(projEvents, []string{"In Progress", "In progress"})
-			if row.CycleTimeStartDatetime == nil {
-				row.CycleTimeStartDatetime = firstMoveToAny(projEvents, []string{"Backlog", "Ready"})
-			}
-			row.DevStartDatetime = firstMoveToAny(projEvents, []string{"In Progress", "In progress"})
-			if row.DevStartDatetime == nil {
-				row.DevStartDatetime = firstMoveToAny(projEvents, []string{"Backlog", "Ready"})
-			}
-			row.ReviewStartDatetime = firstMoveToAny(projEvents, []string{"In review", "In Review"})
-			row.QAStartDatetime = nil
-			row.PutInReadyStartDatetime = firstMoveToAny(projEvents, []string{"Ready", "In Ready", "Ready for Dev"})
-			row.WaitingToPodStartDatetime = firstMoveTo(projEvents, "Done")
-			row.EndDatetime = computeEnd(st, projEvents)
+
+			allIssues = append(allIssues, row)
 		}
 
-		allIssues = append(allIssues, row)
+		// Deterministic order
+		sort.Slice(allIssues, func(i, j int) bool { return allIssues[i].ID < allIssues[j].ID })
+
+		// Build convenience slices using lo
+		closedIssues := lo.Filter(allIssues, func(ci calculatedIssue, _ int) bool { return ci.EndDatetime != nil })
+		openIssues := lo.Filter(allIssues, func(ci calculatedIssue, _ int) bool { return ci.EndDatetime == nil })
+
+		if err := writeOutput(filepath.Join(base, "calculated_issue.csv"), allIssues); err != nil {
+			return err
+		}
+
+		// Step 2: calculate monthly lead time and cycle time in days, using all issues with an EndDatetime
+		if err := writeMonthlyCycleSummary(filepath.Join(base, "cycle_time.csv"), closedIssues); err != nil {
+			return err
+		}
+
+		// Step 3: weekly throughput with Shewhart control limits (c-chart)
+		if err := writeWeeklyThroughput(filepath.Join(base, "throughput_week.csv"), closedIssues); err != nil {
+			return err
+		}
+
+		// Step 4: current stocks for not-closed issues by stage
+		if err := writeStocks(filepath.Join(base, "stocks.csv"), openIssues); err != nil {
+			return err
+		}
+
+		// Step 5: weekly stocks per project by ISO year-week (cutoff at Sunday 23:59:59 UTC)
+		if err := writeWeeklyStocks(filepath.Join(base, "stocks_week.csv"), openIssues); err != nil {
+			return err
+		}
 	}
 
-	// Deterministic order
-	sort.Slice(allIssues, func(i, j int) bool { return allIssues[i].ID < allIssues[j].ID })
-
-	// Build convenience slices using lo
-	closedIssues := lo.Filter(allIssues, func(ci calculatedIssue, _ int) bool { return ci.EndDatetime != nil })
-	openIssues := lo.Filter(allIssues, func(ci calculatedIssue, _ int) bool { return ci.EndDatetime == nil })
-
-	if err := writeOutput(filepath.Join(base, "calculated_issue.csv"), allIssues); err != nil {
-		return err
+	// PR scope calculations (do not require config)
+	if *prScope {
+		// weekly PR change-requests stats (avg, median, p90) by PR open week
+		if err := writePRChangeRequestsWeekly(filepath.Join(base, "pr_change_requests_week.csv"), base); err != nil {
+			return err
+		}
+		// per-repo PR change-requests stats (median per repo) and distribution
+		if err := writePRChangeRequestsPerRepo(filepath.Join(base, "pr_change_requests_repo.csv"), base); err != nil {
+			return err
+		}
+		if err := writePRChangeRequestsRepoDist(filepath.Join(base, "pr_change_requests_repo_dist.csv"), base); err != nil {
+			return err
+		}
 	}
 
-	// Step 2: calculate monthly lead time and cycle time in days, using all issues with an EndDatetime
-	if err := writeMonthlyCycleSummary(filepath.Join(base, "cycle_time.csv"), closedIssues); err != nil {
-		return err
+	if *issuesScope {
+		slog.Info(fmt.Sprintf("calculate.done (issues)"))
 	}
-
-	// Step 3: weekly throughput with Shewhart control limits (c-chart)
-	if err := writeWeeklyThroughput(filepath.Join(base, "throughput_week.csv"), closedIssues); err != nil {
-		return err
+	if *prScope {
+		slog.Info(fmt.Sprintf("calculate.done (pr)"))
 	}
-
-	// Step 4: current stocks for not-closed issues by stage
-	if err := writeStocks(filepath.Join(base, "stocks.csv"), openIssues); err != nil {
-		return err
-	}
-
-	// Step 5: weekly stocks per project by ISO year-week (cutoff at Sunday 23:59:59 UTC)
-	if err := writeWeeklyStocks(filepath.Join(base, "stocks_week.csv"), openIssues); err != nil {
-		return err
-	}
-
-	// Step 6: weekly PR change-requests stats (avg, median, p90) by PR open week
-	if err := writePRChangeRequestsWeekly(filepath.Join(base, "pr_change_requests_week.csv"), base); err != nil {
-		return err
-	}
-	// Step 7: per-repo PR change-requests stats (median per repo) and distribution
-	if err := writePRChangeRequestsPerRepo(filepath.Join(base, "pr_change_requests_repo.csv"), base); err != nil {
-		return err
-	}
-	if err := writePRChangeRequestsRepoDist(filepath.Join(base, "pr_change_requests_repo_dist.csv"), base); err != nil {
-		return err
-	}
-
-	slog.Info(fmt.Sprintf("calculate.done count=%d countClosed=%d count Open=%d", len(allIssues), len(closedIssues), len(openIssues)))
 	return nil
 }
 
