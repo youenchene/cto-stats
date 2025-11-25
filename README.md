@@ -15,8 +15,8 @@ Current sources are :
 
 
 The tools is a CLI with three subcommands :
-  - **import**: fetches issues and timelines from GitHub and writes raw CSVs to ./data - that you can reuse apart if you want to.
-  - **calculate**: computes aggregates (cycle time, throughput, WIP stocks) and writes CSVs to ./data  - that you can reuse apart if you want to.
+  - **import**: fetches data from GitHub and writes raw CSVs to ./data. You can scope what is imported with `--issues` and/or `--pr`.
+  - **calculate**: computes aggregates and writes CSVs to ./data. You can scope what is calculated with `--issues` and/or `--pr`.
   - **web**: launch web dashboard.
 
 [View full size image](docs/screen-v0.1.png)
@@ -90,12 +90,32 @@ GITHUB_TOKEN=ghp_xxx CONFIG_PATH=./config.yml go run . import
 # Import with filters
 GITHUB_TOKEN=ghp_xxx CONFIG_PATH=./config.yml go run . import -since 2025-01-01 -repo repoA,repoB
 
+# Import only issues scope (issues + timelines + project moves)
+GITHUB_TOKEN=ghp_xxx CONFIG_PATH=./config.yml go run . import --issues
+
+# Import only PR scope (pull requests + reviews for change requests)
+GITHUB_TOKEN=ghp_xxx CONFIG_PATH=./config.yml go run . import --pr
+
+# Import both scopes explicitly (default when no scope is provided)
+GITHUB_TOKEN=ghp_xxx CONFIG_PATH=./config.yml go run . import --issues --pr
+
 # Calculate KPIs (requires config file for project column mappings)
 GITHUB_TOKEN=ghp_xxx CONFIG_PATH=./config.yml go run . calculate
+
+# Calculate only issue-based KPIs (lead/cycle times, throughput, stocks)
+GITHUB_TOKEN=ghp_xxx CONFIG_PATH=./config.yml go run . calculate --issues
+
+# Calculate only PR change-requests KPIs (weekly, per-repo)
+GITHUB_TOKEN=ghp_xxx go run . calculate --pr
 
 # Serve the dashboard
 GITHUB_TOKEN=ghp_xxx go run . web -addr :8080 -data ./data -ui ./ui/dist
 ```
+
+Notes about scopes:
+- `--issues` scope handles issues, status timelines, and project moves; these power lead/cycle time, throughput, and stocks.
+- `--pr` scope is only about pull requests and change requests (reviews with CHANGES_REQUESTED) and powers the PR charts.
+- If you omit both flags, both scopes are processed (backward compatible default).
 
 ## How to run - developer mode
 
