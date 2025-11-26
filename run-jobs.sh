@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Load env for cron (CONFIG_PATH, DATA_DIR, GITHUB_TOKEN)
-if [ -f /etc/cron.env ]; then
-  # shellcheck disable=SC1091
-  source /etc/cron.env
-fi
+# This script is intended to run once and exit (Cloud Run Jobs).
+# It relies directly on environment variables (CONFIG_PATH, DATA_DIR, GITHUB_TOKEN)
+# provided by the runtime; no cron environment file is used.
 
 log() { echo "[$(date -Iseconds)] $*"; }
 
-log "Starting scheduled job: import -> calculate"
+log "Starting job: import -> calculate"
 
 log "Start Issues import & calculate"
 
@@ -38,4 +36,4 @@ if ! cto-stats calculate --pr; then
   exit 1
 fi
 
-log "Scheduled job completed successfully"
+log "Job completed successfully"
