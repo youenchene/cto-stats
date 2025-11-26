@@ -33,11 +33,11 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract Docker metadata (tags, labels)
-        id: meta
+      - name: Extract Docker metadata (all image)
+        id: meta_all
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_REPOSITORY }}
+          images: ${{ secrets.DOCKERHUB_REPOSITORY }}-all
           # This will create tags like:
           #   latest (only on default branch)
           #   sha-<shortsha>
@@ -46,13 +46,55 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short,prefix=sha-
 
-      - name: Build and push
+      - name: Build and push (all)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta_all.outputs.tags }}
+          labels: ${{ steps.meta_all.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # --- WEB IMAGE ---
+      - name: Extract Docker metadata (web image)
+        id: meta_web
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_REPOSITORY }}-web
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short,prefix=sha-
+
+      - name: Build and push (web)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.web
+          push: true
+          tags: ${{ steps.meta_web.outputs.tags }}
+          labels: ${{ steps.meta_web.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # --- JOBS IMAGE ---
+      - name: Extract Docker metadata (jobs image)
+        id: meta_jobs
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_REPOSITORY }}-jobs
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short,prefix=sha-
+
+      - name: Build and push (jobs)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.jobs
+          push: true
+          tags: ${{ steps.meta_jobs.outputs.tags }}
+          labels: ${{ steps.meta_jobs.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

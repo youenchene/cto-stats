@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+
+# ---- Stage 1: Build Go binary (no UI needed for jobs) ----
+FROM golang:1.24-alpine AS go-builder
+WORKDIR /src
+RUN apk add --no-cache build-base git
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ENV CGO_ENABLED=0 GOOS=linux
+RUN go build -o /out/cto-stats ./
+
+# ---- Stage 2: Runtime (jobs only) ----
+FROM alpine:3.20
+WORKDIR /
+RUN apk add --no-cache ca-certificates tzdata bash
+COPY --from=go-builder /out/cto-stats /usr/local/bin/cto-stats
+COPY run-jobs.sh /usr/local/bin/run-jobs.sh
+RUN chmod +x /usr/local/bin/run-jobs.sh && \
+    mkdir -p /data /config
+
+# Default envs; Cloud Run Jobs can override
+ENV CONFIG_PATH=/config/config.yml
+ENV DATA_DIR=/data
+
+# No EXPOSE/CMD needed; Cloud Run Jobs will just run the entrypoint
+ENTRYPOINT ["/usr/local/bin/run-jobs.sh"]
