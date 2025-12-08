@@ -75,9 +75,16 @@ func Run(args []string) error {
 	fs := flag.NewFlagSet("calculate", flag.ContinueOnError)
 	issuesScope := fs.Bool("issues", false, "Process issues scope: calculate issue-based KPIs (cycle time, throughput, stocks)")
 	prScope := fs.Bool("pr", false, "Process pull-requests scope: change-requests KPIs only")
+	cloudSpendingScope := fs.Bool("cloudspending", false, "Process cloud spending scope: aggregate cost data")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+
+	// Cloud spending scope is independent
+	if *cloudSpendingScope {
+		return runCloudSpendingCalculate()
+	}
+
 	// Backward compatibility: if no scope specified, process both
 	if !*issuesScope && !*prScope {
 		*issuesScope = true
@@ -1560,5 +1567,255 @@ func writePRChangeRequestsRepoDist(outPath string, baseDir string) error {
 			}
 		}
 	}
+	return w.Error()
+}
+
+// runCloudSpendingCalculate aggregates cloud spending data
+func runCloudSpendingCalculate() error {
+	slog.Info("cloudspending.calculate.start")
+
+	// Read config for service filter
+	cfgPath := os.Getenv("CONFIG_PATH")
+	if cfgPath == "" {
+		cfgPath = "./config.yml"
+	}
+
+	var serviceFilter []string
+	if _, err := os.Stat(cfgPath); err == nil {
+		cfg, err := config.Load(cfgPath)
+		if err == nil {
+			serviceFilter = cfg.CloudSpending.Services
+		}
+	}
+
+	// Read cloud costs CSV
+	inputPath := filepath.Join("data", "cloud_costs.csv")
+	records, err := readCloudCosts(inputPath)
+	if err != nil {
+		return fmt.Errorf("failed to read cloud costs: %w", err)
+	}
+
+	if len(records) == 0 {
+		slog.Warn("cloudspending.calculate.no_data")
+		return fmt.Errorf("no cloud costs data found in %s", inputPath)
+	}
+
+	// Aggregate per provider per month
+	monthlyPath := filepath.Join("data", "cloud_spending_monthly.csv")
+	if err := writeCloudSpendingMonthly(monthlyPath, records); err != nil {
+		return fmt.Errorf("failed to write monthly aggregation: %w", err)
+	}
+	slog.Info("cloudspending.calculate.monthly.done", "output", monthlyPath)
+
+	// Aggregate per service per month (filtered)
+	servicesPath := filepath.Join("data", "cloud_spending_services.csv")
+	if err := writeCloudSpendingServices(servicesPath, records, serviceFilter); err != nil {
+		return fmt.Errorf("failed to write services aggregation: %w", err)
+	}
+	slog.Info("cloudspending.calculate.services.done", "output", servicesPath)
+
+	slog.Info("cloudspending.calculate.done")
+	return nil
+}
+
+type cloudCostRecord struct {
+	Provider string
+	Service  string
+	Month    time.Time
+	Cost     float64
+	Currency string
+}
+
+// readCloudCosts reads the cloud_costs.csv file
+func readCloudCosts(path string) ([]cloudCostRecord, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	header, err := r.Read()
+	if err != nil {
+		return nil, err
+	}
+
+	idx := indexMap(header)
+	var records []cloudCostRecord
+
+	for {
+		row, err := r.Read()
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			return nil, err
+		}
+
+		month, err := time.Parse("2006-01-02", row[idx["month"]])
+		if err != nil {
+			continue
+		}
+
+		var cost float64
+		fmt.Sscanf(row[idx["cost"]], "%f", &cost)
+
+		records = append(records, cloudCostRecord{
+			Provider: row[idx["provider"]],
+			Service:  row[idx["service"]],
+			Month:    month,
+			Cost:     cost,
+			Currency: row[idx["currency"]],
+		})
+	}
+
+	return records, nil
+}
+
+// writeCloudSpendingMonthly aggregates costs per provider per month
+func writeCloudSpendingMonthly(path string, records []cloudCostRecord) error {
+	// Aggregate by provider and month
+	type key struct {
+		Provider string
+		Month    string
+	}
+	agg := make(map[key]float64)
+
+	for _, r := range records {
+		k := key{
+			Provider: r.Provider,
+			Month:    r.Month.Format("2006-01"),
+		}
+		agg[k] += r.Cost
+	}
+
+	// Sort by month and provider
+	type row struct {
+		Month    string
+		Provider string
+		Cost     float64
+	}
+	var rows []row
+	for k, cost := range agg {
+		rows = append(rows, row{
+			Month:    k.Month,
+			Provider: k.Provider,
+			Cost:     cost,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Month != rows[j].Month {
+			return rows[i].Month < rows[j].Month
+		}
+		return rows[i].Provider < rows[j].Provider
+	})
+
+	// Write CSV
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write([]string{"month", "provider", "cost"}); err != nil {
+		return err
+	}
+
+	for _, r := range rows {
+		if err := w.Write([]string{r.Month, r.Provider, fmt.Sprintf("%.2f", r.Cost)}); err != nil {
+			return err
+		}
+	}
+
+	return w.Error()
+}
+
+// writeCloudSpendingServices aggregates costs per service per month (filtered)
+func writeCloudSpendingServices(path string, records []cloudCostRecord, serviceFilter []string) error {
+	// Build filter set
+	filterSet := make(map[string]bool)
+	for _, s := range serviceFilter {
+		filterSet[strings.TrimSpace(s)] = true
+	}
+
+	// Aggregate by provider, service, and month
+	type key struct {
+		Provider string
+		Service  string
+		Month    string
+	}
+	agg := make(map[key]float64)
+
+	for _, r := range records {
+		// Apply filter if specified
+		if len(filterSet) > 0 && !filterSet[r.Service] {
+			continue
+		}
+
+		k := key{
+			Provider: r.Provider,
+			Service:  r.Service,
+			Month:    r.Month.Format("2006-01"),
+		}
+		agg[k] += r.Cost
+	}
+
+	// Sort by month, provider, and service
+	type row struct {
+		Month    string
+		Provider string
+		Service  string
+		Cost     float64
+	}
+	var rows []row
+	for k, cost := range agg {
+		rows = append(rows, row{
+			Month:    k.Month,
+			Provider: k.Provider,
+			Service:  k.Service,
+			Cost:     cost,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Month != rows[j].Month {
+			return rows[i].Month < rows[j].Month
+		}
+		if rows[i].Provider != rows[j].Provider {
+			return rows[i].Provider < rows[j].Provider
+		}
+		return rows[i].Service < rows[i].Service
+	})
+
+	// Write CSV
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write([]string{"month", "provider", "service", "cost"}); err != nil {
+		return err
+	}
+
+	for _, r := range rows {
+		if err := w.Write([]string{r.Month, r.Provider, r.Service, fmt.Sprintf("%.2f", r.Cost)}); err != nil {
+			return err
+		}
+	}
+
 	return w.Error()
 }

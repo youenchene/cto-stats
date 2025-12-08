@@ -57,3 +57,17 @@ export function usePRChangeRequestsRepoDist() {
     queryFn: () => fetchJSON('/api/pr/change_requests/repo_dist'),
   })
 }
+
+export function useCloudSpendingMonthly() {
+  return useQuery<Row[]>({
+    queryKey: ['cloud_spending_monthly'],
+    queryFn: () => fetchJSON('/api/cloud_spending/monthly'),
+  })
+}
+
+export function useCloudSpendingServices() {
+  return useQuery<Row[]>({
+    queryKey: ['cloud_spending_services'],
+    queryFn: () => fetchJSON('/api/cloud_spending/services'),
+  })
+}

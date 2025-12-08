@@ -2,14 +2,19 @@ package cmdimport
 
 import (
 	"context"
+	"cto-stats/connectors/azure"
 	"cto-stats/connectors/config"
 	ccsv "cto-stats/connectors/csv"
+	"cto-stats/connectors/gcp"
 	cg "cto-stats/connectors/github"
+	"cto-stats/domain/cloudspending"
 	gh "cto-stats/domain/github"
+	"encoding/csv"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -48,11 +53,17 @@ func Run(args []string) error {
 	// Scopes: allow separating processing into issues and PRs
 	issuesScope := fs.Bool("issues", false, "Process issues scope: issues, timelines, project moves")
 	prScope := fs.Bool("pr", false, "Process pull-requests scope: PRs and change-request reviews")
+	cloudSpendingScope := fs.Bool("cloudspending", false, "Process cloud spending scope: Azure and GCP costs")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	// Backward compatibility: if no scope is specified, process both
+	// Cloud spending scope is independent
+	if *cloudSpendingScope {
+		return runCloudSpendingImport()
+	}
+
+	// Backward compatibility: if no scope is specified, process both issues and PRs
 	if !*issuesScope && !*prScope {
 		*issuesScope = true
 		*prScope = true
@@ -346,4 +357,107 @@ func usersToLogins(us []User) []string {
 		}
 	}
 	return res
+}
+
+// runCloudSpendingImport fetches cloud spending data from Azure and GCP
+func runCloudSpendingImport() error {
+	slog.Info("cloudspending.import.start")
+	ctx := context.Background()
+
+	var allRecords []cloudspending.CostRecord
+
+	// Fetch Azure costs (last 24 months)
+	azureSubscriptionID := os.Getenv("AZURE_SUBSCRIPTION_ID")
+	azureTenantID := os.Getenv("AZURE_TENANT_ID")
+	azureClientID := os.Getenv("AZURE_CLIENT_ID")
+	azureClientSecret := os.Getenv("AZURE_CLIENT_SECRET")
+
+	if azureSubscriptionID != "" && azureTenantID != "" && azureClientID != "" && azureClientSecret != "" {
+		slog.Info("cloudspending.azure.fetch.start")
+		azureClient := azure.NewClient(azureSubscriptionID, azureTenantID, azureClientID, azureClientSecret)
+		azureRecords, err := azureClient.FetchCosts(ctx, 24)
+		if err != nil {
+			slog.Warn("cloudspending.azure.fetch.error", "error", err)
+			fmt.Fprintf(os.Stderr, "Warning: failed to fetch Azure costs: %v\n", err)
+		} else {
+			allRecords = append(allRecords, azureRecords...)
+			slog.Info("cloudspending.azure.fetch.done", "count", len(azureRecords))
+		}
+	} else {
+		slog.Info("cloudspending.azure.skip", "reason", "missing environment variables")
+	}
+
+	// Fetch GCP costs (last 24 months)
+	gcpProjectID := os.Getenv("GCP_PROJECT_ID")
+	gcpBillingAccount := os.Getenv("GCP_BILLING_ACCOUNT")
+	gcpServiceAccountJSON := os.Getenv("GCP_SERVICE_ACCOUNT_JSON")
+
+	if gcpProjectID != "" && gcpBillingAccount != "" && gcpServiceAccountJSON != "" {
+		slog.Info("cloudspending.gcp.fetch.start")
+		gcpClient := gcp.NewClient(gcpProjectID, gcpBillingAccount, gcpServiceAccountJSON)
+		gcpRecords, err := gcpClient.FetchCosts(ctx, 24)
+		if err != nil {
+			slog.Warn("cloudspending.gcp.fetch.error", "error", err)
+			fmt.Fprintf(os.Stderr, "Warning: failed to fetch GCP costs: %v\n", err)
+		} else {
+			allRecords = append(allRecords, gcpRecords...)
+			slog.Info("cloudspending.gcp.fetch.done", "count", len(gcpRecords))
+		}
+	} else {
+		slog.Info("cloudspending.gcp.skip", "reason", "missing environment variables")
+	}
+
+	// Write to CSV
+	if len(allRecords) == 0 {
+		slog.Warn("cloudspending.import.no_data")
+		return fmt.Errorf("no cloud spending data fetched - check environment variables")
+	}
+
+	outputPath := filepath.Join("data", "cloud_costs.csv")
+	if err := writeCloudCostsCSV(outputPath, allRecords); err != nil {
+		slog.Error("cloudspending.csv.write.error", "error", err)
+		return fmt.Errorf("failed to write cloud costs CSV: %w", err)
+	}
+
+	slog.Info("cloudspending.import.done", "records", len(allRecords), "output", outputPath)
+	return nil
+}
+
+// writeCloudCostsCSV writes cloud cost records to a CSV file
+func writeCloudCostsCSV(path string, records []cloudspending.CostRecord) error {
+	// Ensure data directory exists
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("failed to create data directory: %w", err)
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("failed to create file: %w", err)
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	// Write header
+	header := []string{"provider", "service", "month", "cost", "currency"}
+	if err := w.Write(header); err != nil {
+		return fmt.Errorf("failed to write header: %w", err)
+	}
+
+	// Write records
+	for _, r := range records {
+		row := []string{
+			r.Provider,
+			r.Service,
+			r.Month.Format("2006-01-02"),
+			fmt.Sprintf("%.2f", r.Cost),
+			r.Currency,
+		}
+		if err := w.Write(row); err != nil {
+			return fmt.Errorf("failed to write row: %w", err)
+		}
+	}
+
+	return nil
 }

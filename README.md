@@ -8,15 +8,18 @@ The generated KPI are :
  - **Lead time** and **cycle time** trend
  - **Stocks** per week : **Red Bin** for bug and **stocks** per **development process steps**.
  - **Statistics controlled** weekly **throughput** (issues closed per week)
+ - **Cloud spending follow-up**: monthly Azure & GCP costs overall and per service
 
 Current sources are :
  - github issues of a github organization.
  - github projects of a github organization.
+ - Azure Cost Management API (for cloud spending)
+ - GCP Cloud Billing API (for cloud spending)
 
 
 The tools is a CLI with three subcommands :
-  - **import**: fetches data from GitHub and writes raw CSVs to ./data. You can scope what is imported with `--issues` and/or `--pr`.
-  - **calculate**: computes aggregates and writes CSVs to ./data. You can scope what is calculated with `--issues` and/or `--pr`.
+  - **import**: fetches data from GitHub and writes raw CSVs to ./data. You can scope what is imported with `--issues`, `--pr`, and/or `--cloudspending`.
+  - **calculate**: computes aggregates and writes CSVs to ./data. You can scope what is calculated with `--issues`, `--pr`, and/or `--cloudspending`.
   - **web**: launch web dashboard.
 
 [View full size image](docs/screen-v0.1.png)
@@ -65,13 +68,30 @@ More information here : https://deming.org/a-beginners-guide-to-control-charts/
 
 Basic indicator to identify Change request event per week on pull requests.
 
+### Cloud Spending Follow-Up
+
+Tracks cloud infrastructure spending over time from Azure and GCP. Two visualizations are provided:
+- **Overall costs per month**: Shows total spending per cloud provider (Azure & GCP) aggregated monthly
+- **Service-specific costs per month**: Shows spending breakdown by specific cloud services (configurable in `config.yml`)
+
+This helps identify cost trends, compare spending across providers, and track specific services that contribute most to cloud expenses.
+
 ## How to run - user mode
 
 ### Prequisites
 
 Environment variables:
-- GITHUB_TOKEN: a GitHub token with read access to the organization
-- CONFIG_PATH: (optional) path to config.yml
+- **GITHUB_TOKEN**: a GitHub token with read access to the organization (required for GitHub data)
+- **CONFIG_PATH**: (optional) path to config.yml (defaults to `./config.yml`)
+
+Cloud Spending (optional, only needed for `--cloudspending` scope):
+- **AZURE_SUBSCRIPTION_ID**: Azure subscription ID
+- **AZURE_TENANT_ID**: Azure AD tenant ID
+- **AZURE_CLIENT_ID**: Azure service principal client ID
+- **AZURE_CLIENT_SECRET**: Azure service principal client secret
+- **GCP_PROJECT_ID**: GCP project ID
+- **GCP_BILLING_ACCOUNT**: GCP billing account ID (format: `billingAccounts/XXXXXX-XXXXXX-XXXXXX`)
+- **GCP_SERVICE_ACCOUNT_JSON**: GCP service account JSON key (as a string or path to JSON file)
 
 ## Usage
 
@@ -99,6 +119,11 @@ GITHUB_TOKEN=ghp_xxx CONFIG_PATH=./config.yml go run . import --pr
 # Import both scopes explicitly (default when no scope is provided)
 GITHUB_TOKEN=ghp_xxx CONFIG_PATH=./config.yml go run . import --issues --pr
 
+# Import cloud spending data (last 24 months from Azure & GCP)
+AZURE_SUBSCRIPTION_ID=xxx AZURE_TENANT_ID=xxx AZURE_CLIENT_ID=xxx AZURE_CLIENT_SECRET=xxx \
+GCP_PROJECT_ID=xxx GCP_BILLING_ACCOUNT=billingAccounts/XXX GCP_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}' \
+go run . import --cloudspending
+
 # Calculate KPIs (requires config file for project column mappings)
 GITHUB_TOKEN=ghp_xxx CONFIG_PATH=./config.yml go run . calculate
 
@@ -108,6 +133,9 @@ GITHUB_TOKEN=ghp_xxx CONFIG_PATH=./config.yml go run . calculate --issues
 # Calculate only PR change-requests KPIs (weekly, per-repo)
 GITHUB_TOKEN=ghp_xxx go run . calculate --pr
 
+# Calculate cloud spending aggregations (monthly and per-service)
+CONFIG_PATH=./config.yml go run . calculate --cloudspending
+
 # Serve the dashboard
 GITHUB_TOKEN=ghp_xxx go run . web -addr :8080 -data ./data -ui ./ui/dist
 ```
@@ -115,7 +143,9 @@ GITHUB_TOKEN=ghp_xxx go run . web -addr :8080 -data ./data -ui ./ui/dist
 Notes about scopes:
 - `--issues` scope handles issues, status timelines, and project moves; these power lead/cycle time, throughput, and stocks.
 - `--pr` scope is only about pull requests and change requests (reviews with CHANGES_REQUESTED) and powers the PR charts.
-- If you omit both flags, both scopes are processed (backward compatible default).
+- `--cloudspending` scope fetches and aggregates cloud costs from Azure and GCP APIs; powers the Cloud Spending Follow-Up dashboard.
+- If you omit all scope flags for issues/PR commands, both `--issues` and `--pr` are processed (backward compatible default).
+- The `--cloudspending` scope is independent and must be explicitly specified.
 
 ## How to run - developer mode
 
@@ -186,6 +216,34 @@ Available API endpoints :
 - GET /api/stocks → data/stocks.csv
 - GET /api/stocks/week → data/stocks_week.csv
 - GET /api/throughput/week → data/throughput_week.csv
+- GET /api/pr/change_requests → data/pr_change_requests_week.csv
+- GET /api/pr/change_requests/repo → data/pr_change_requests_repo.csv
+- GET /api/pr/change_requests/repo_dist → data/pr_change_requests_repo_dist.csv
+- GET /api/cloud_spending/monthly → data/cloud_spending_monthly.csv
+- GET /api/cloud_spending/services → data/cloud_spending_services.csv
+
+### Configuration (config.yml)
+
+The `config.yml` file allows customization of GitHub project mappings and cloud spending service filters.
+
+**Cloud Spending Configuration:**
+
+Add a `cloud_spending` section to filter which services appear in the detailed service chart:
+
+```yaml
+cloud_spending:
+  services:
+    # List of cloud services to track in the detailed service chart
+    # Leave empty to track all services, or specify services by name
+    - "Virtual Machines"
+    - "Azure Kubernetes Service"
+    - "Storage Accounts"
+    - "Compute Engine"
+    - "Cloud Storage"
+    - "Google Kubernetes Engine"
+```
+
+When services are specified, only those services will appear in the "Cloud Costs by Service per Month" chart. The overall chart always shows total costs per provider regardless of this filter.
 
 ## How to build and run with Docker
 
@@ -219,6 +277,26 @@ docker run -d \
   cto-stats:latest
 ```
 
+To include cloud spending data, add the Azure and GCP environment variables:
+
+```bash
+docker run -d \
+  --name cto-stats \
+  -e GITHUB_TOKEN=ghp_xxx \
+  -e TZ=Europe/Paris \
+  -e AZURE_SUBSCRIPTION_ID=xxx \
+  -e AZURE_TENANT_ID=xxx \
+  -e AZURE_CLIENT_ID=xxx \
+  -e AZURE_CLIENT_SECRET=xxx \
+  -e GCP_PROJECT_ID=xxx \
+  -e GCP_BILLING_ACCOUNT=billingAccounts/XXX \
+  -e GCP_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}' \
+  -v $(pwd)/config.yml:/config/config.yml:ro \
+  -v cto_stats_data:/data \
+  -p 8080:8080 \
+  cto-stats:latest
+```
+
 Or bind‑mount a host directory:
 
 ```bash
@@ -228,6 +306,13 @@ docker run -d \
   --name cto-stats \
   -e GITHUB_TOKEN=ghp_xxx \
   -e TZ=Europe/Paris \
+  -e AZURE_SUBSCRIPTION_ID=xxx \
+  -e AZURE_TENANT_ID=xxx \
+  -e AZURE_CLIENT_ID=xxx \
+  -e AZURE_CLIENT_SECRET=xxx \
+  -e GCP_PROJECT_ID=xxx \
+  -e GCP_BILLING_ACCOUNT=billingAccounts/XXX \
+  -e GCP_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}' \
   -v $(pwd)/config.yml:/config/config.yml:ro \
   -v $(pwd)/cto-stats-data:/data \
   -p 8080:8080 \
@@ -241,7 +326,9 @@ Notes:
   - Background job logs can be viewed at `/var/log/init-jobs.log` (and daily cron logs at `/var/log/cron.log`).
 - A cron job runs every day at 05:00 container local time to refresh data (`import` then `calculate`).
   - Set timezone with `-e TZ=Europe/Paris` (or your preferred IANA TZ).
+  - By default, the cron job runs `import --issues --pr` and `calculate --issues --pr`. To include cloud spending data, you must provide the Azure/GCP environment variables and the job will automatically include `--cloudspending` scope.
 - The web UI is available at http://localhost:8080/ (APIs under `/api/*`).
+- Cloud spending environment variables (Azure and GCP) are optional. If not provided, only GitHub data will be imported.
 - `CONFIG_PATH` defaults to `/config/config.yml`. You can override if you mount elsewhere:
 
 ```bash

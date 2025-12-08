@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { useCycleTimes, useStocks, useStocksWeek, useThroughputWeek, usePRChangeRequestsWeek } from './api'
+import { useCycleTimes, useStocks, useStocksWeek, useThroughputWeek, usePRChangeRequestsWeek, useCloudSpendingMonthly, useCloudSpendingServices } from './api'
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card'
 import { Sparkline } from './components/Sparkline'
 import { LineChart, Point } from './components/LineChart'
@@ -22,7 +22,7 @@ function BigNumber({ label, value, unit }: { label: string; value: number | null
 
 export default function App() {
   const { t } = useTranslation()
-  const [activeTab, setActiveTab] = useState<'general' | 'dev'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'dev' | 'cloudspending'>('general')
   return (
     <div className="min-h-full p-6 space-y-8">
       <h1 className="text-2xl font-semibold tracking-tight">{t('common.appTitle')}</h1>
@@ -44,6 +44,14 @@ export default function App() {
           >
             {t('tabs.devProcess')}
           </button>
+          <button
+            className={`px-3 py-2 -mb-px border-b-2 ${
+              activeTab === 'cloudspending' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-600'
+            }`}
+            onClick={() => setActiveTab('cloudspending')}
+          >
+            Cloud Spending Follow Up
+          </button>
         </div>
       </div>
       {activeTab === 'general' ? (
@@ -52,9 +60,13 @@ export default function App() {
           <StocksBlock />
           <ThroughputBlock />
         </>
-      ) : (
+      ) : activeTab === 'dev' ? (
         <>
           <DevProcessBlock />
+        </>
+      ) : (
+        <>
+          <CloudSpendingBlock />
         </>
       )}
     </div>
@@ -385,6 +397,143 @@ function ThroughputBlock() {
             <p className="mt-2 text-xs text-gray-500">{t('throughput.specialCauseDescription')}</p>
         </CardContent>
       </Card>
+    </section>
+  )
+}
+
+function CloudSpendingBlock() {
+  const monthlyQuery = useCloudSpendingMonthly()
+  const servicesQuery = useCloudSpendingServices()
+
+  const monthlyData = monthlyQuery.data ?? []
+  const servicesData = servicesQuery.data ?? []
+
+  // Process overall monthly data (Azure & GCP per month)
+  const monthlyLabels = useMemo(() => {
+    const months = new Set<string>()
+    monthlyData.forEach(r => {
+      const month = r['month']
+      if (month) months.add(month)
+    })
+    return Array.from(months).sort()
+  }, [monthlyData])
+
+  const monthlyStacks = useMemo(() => {
+    const providers = new Set<string>()
+    monthlyData.forEach(r => {
+      const provider = r['provider']
+      if (provider) providers.add(provider)
+    })
+    
+    return Array.from(providers).sort().map(provider => {
+      const values = monthlyLabels.map(month => {
+        const row = monthlyData.find(r => r['month'] === month && r['provider'] === provider)
+        return row ? parseNumber(row['cost']) ?? 0 : 0
+      })
+      return {
+        name: provider.toUpperCase(),
+        values,
+        color: provider === 'azure' ? '#0078D4' : '#4285F4'
+      }
+    })
+  }, [monthlyData, monthlyLabels])
+
+  // Process services data (filtered services per month)
+  const servicesLabels = useMemo(() => {
+    const months = new Set<string>()
+    servicesData.forEach(r => {
+      const month = r['month']
+      if (month) months.add(month)
+    })
+    return Array.from(months).sort()
+  }, [servicesData])
+
+  const servicesStacks = useMemo(() => {
+    // Group by service (across providers)
+    const serviceMap = new Map<string, { provider: string, values: number[] }>()
+    
+    servicesData.forEach(r => {
+      const service = r['service']
+      const provider = r['provider']
+      if (!service) return
+      
+      const key = `${provider}:${service}`
+      if (!serviceMap.has(key)) {
+        serviceMap.set(key, {
+          provider,
+          values: new Array(servicesLabels.length).fill(0)
+        })
+      }
+      
+      const month = r['month']
+      const monthIdx = servicesLabels.indexOf(month)
+      if (monthIdx >= 0) {
+        serviceMap.get(key)!.values[monthIdx] = parseNumber(r['cost']) ?? 0
+      }
+    })
+
+    // Convert to stacks with colors
+    const colors = [
+      '#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6',
+      '#ec4899', '#14b8a6', '#f97316', '#06b6d4', '#84cc16'
+    ]
+    
+    return Array.from(serviceMap.entries()).map(([key, data], idx) => {
+      const [provider, service] = key.split(':')
+      return {
+        name: `${service} (${provider})`,
+        values: data.values,
+        color: colors[idx % colors.length]
+      }
+    })
+  }, [servicesData, servicesLabels])
+
+  return (
+    <section>
+      <h2 className="text-xl font-semibold mb-3">Cloud Spending Follow Up</h2>
+      <div className="space-y-6">
+        {/* Overall costs per provider per month */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Overall Cloud Costs per Month (Azure & GCP)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="w-full overflow-x-auto">
+              {monthlyStacks.length > 0 ? (
+                <StackedBarChart 
+                  labels={monthlyLabels} 
+                  stacks={monthlyStacks} 
+                  width={Math.max(900, monthlyLabels.length * 60)} 
+                  height={300} 
+                />
+              ) : (
+                <p className="text-gray-500">No data available. Run import and calculate commands with -cloudspending flag.</p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Service-specific costs per month */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Cloud Costs by Service per Month (Filtered)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="w-full overflow-x-auto">
+              {servicesStacks.length > 0 ? (
+                <StackedBarChart 
+                  labels={servicesLabels} 
+                  stacks={servicesStacks} 
+                  width={Math.max(900, servicesLabels.length * 60)} 
+                  height={300} 
+                />
+              ) : (
+                <p className="text-gray-500">No data available. Configure services in config.yml and run import/calculate with -cloudspending flag.</p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     </section>
   )
 }

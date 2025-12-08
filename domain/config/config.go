@@ -7,6 +7,9 @@ type Config struct {
 		Org      string    `yaml:"org"`
 		Projects []Project `yaml:"projects"`
 	} `yaml:"github"`
+	CloudSpending struct {
+		Services []string `yaml:"services"`
+	} `yaml:"cloud_spending"`
 }
 
 type Project struct {
