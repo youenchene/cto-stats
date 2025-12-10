@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-export type StackSeries = { name: string; values: number[] }
+export type StackSeries = { name: string; values: number[]; color?: string }
 
 export function StackedBarChart({
   labels,
@@ -13,6 +13,8 @@ export function StackedBarChart({
   showAxes = true,
   barGap = 6,
   yMax,
+  yAxisLabel,
+  showLegend = false,
 }: {
   labels: string[]
   stacks: StackSeries[]
@@ -23,12 +25,23 @@ export function StackedBarChart({
   showAxes?: boolean
   barGap?: number
   yMax?: number
+  yAxisLabel?: string
+  showLegend?: boolean
 }) {
   const { t } = useTranslation()
   const count = labels.length
   const padding = 32
-  const innerW = Math.max(0, width - padding * 2)
-  const innerH = Math.max(0, height - padding * 2)
+  // Add extra top gap below the Y-axis label to create a visual margin (≈2em)
+  const topGap = yAxisLabel ? 32 : 0
+  // Reserve space for an optional legend row (placed under the chart)
+  const legendHeight = showLegend ? 22 : 0
+  const paddingTop = padding + topGap
+  const paddingBottom = padding + legendHeight
+  // Add extra left padding when a Y-axis label is present to create more space
+  const paddingLeft = yAxisLabel ? 64 : padding
+  const paddingRight = padding
+  const innerW = Math.max(0, width - paddingLeft - paddingRight)
+  const innerH = Math.max(0, height - paddingTop - paddingBottom)
 
   const [hover, setHover] = useState<number | null>(null)
 
@@ -40,8 +53,8 @@ export function StackedBarChart({
   const dataMax = Math.max(1, ...totals)
   const maxTotal = Math.max(1, yMax ?? dataMax)
 
-  const x = (i: number) => padding + (i * innerW) / count
-  const y = (v: number) => padding + (innerH - (v / maxTotal) * innerH)
+  const x = (i: number) => paddingLeft + (i * innerW) / count
+  const y = (v: number) => paddingTop + (innerH - (v / maxTotal) * innerH)
 
   const barW = innerW / count - barGap
 
@@ -63,7 +76,7 @@ export function StackedBarChart({
 
   let colorMap = new Map<string, string>()
   stacks.forEach((s, idx) => {
-    colorMap.set(s.name, colors[idx % colors.length])
+    colorMap.set(s.name, s.color ?? colors[idx % colors.length])
   })
 
   const onMouseMove = (e: React.MouseEvent<SVGSVGElement, MouseEvent>) => {
@@ -88,11 +101,23 @@ export function StackedBarChart({
     <svg width={width} height={height} className="chart-grayscale" onMouseMove={onMouseMove} onMouseLeave={onMouseLeave}>
       {showAxes && (
         <g>
-          <line x1={padding} y1={padding} x2={padding} y2={height - padding} stroke="#e5e7eb" />
-          <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#e5e7eb" />
+          <line x1={paddingLeft} y1={paddingTop} x2={paddingLeft} y2={height - paddingBottom} stroke="#e5e7eb" />
+          <line x1={paddingLeft} y1={height - paddingBottom} x2={width - paddingRight} y2={height - paddingBottom} stroke="#e5e7eb" />
+          {yAxisLabel && (
+            <text
+              x={8}
+              y={padding - 8}
+              textAnchor="start"
+              alignmentBaseline="baseline"
+              fontSize="11"
+              fill="#374151"
+            >
+              {yAxisLabel}
+            </text>
+          )}
           {yTickVals.map((v, i) => (
             <g key={i}>
-              <line x1={padding - 4} y1={y(v)} x2={padding} y2={y(v)} stroke="#e5e7eb" />
+              <line x1={paddingLeft - 4} y1={y(v)} x2={paddingLeft} y2={y(v)} stroke="#e5e7eb" />
               <text x={8} y={y(v)} textAnchor="start" alignmentBaseline="middle" fontSize="10" fill="#6b7280">
                 {v.toFixed(0)}
               </text>
@@ -101,8 +126,8 @@ export function StackedBarChart({
           {/* x grid + labels */}
           {xTickIndices.map((i, k) => (
             <g key={k}>
-              <line x1={x(i) + barW / 2} y1={padding} x2={x(i) + barW / 2} y2={height - padding} stroke="#f3f4f6" />
-              <text x={x(i) + barW / 2} y={height - padding + 14} textAnchor="middle" fontSize="10" fill="#6b7280">
+              <line x1={x(i) + barW / 2} y1={paddingTop} x2={x(i) + barW / 2} y2={height - paddingBottom} stroke="#f3f4f6" />
+              <text x={x(i) + barW / 2} y={height - paddingBottom + 14} textAnchor="middle" fontSize="10" fill="#6b7280">
                 {labels[i]}
               </text>
             </g>
@@ -136,7 +161,7 @@ export function StackedBarChart({
       {/* hover overlay */}
       {hover != null && (
         <g>
-          <rect x={x(hover) + barGap / 2} y={padding} width={Math.max(0, barW)} height={innerH} fill="#000" opacity={0.06} />
+          <rect x={x(hover) + barGap / 2} y={paddingTop} width={Math.max(0, barW)} height={innerH} fill="#000" opacity={0.06} />
           {/* tooltip */}
           {hoverData && (
             (() => {
@@ -156,7 +181,7 @@ export function StackedBarChart({
                 : [])
               const tooltipH = titleLineHeight + gapBelowTitle + items.length * itemLineHeight + 12
               const tx = Math.min(width - padding - tooltipW, bx + barW + 8)
-              const ty = padding + 8
+              const ty = paddingTop + 8
               const titleY = ty + titleLineHeight
               const firstItemBaseY = titleY + gapBelowTitle
               return (
@@ -176,6 +201,28 @@ export function StackedBarChart({
             })()
           )}
         </g>
+      )}
+
+      {/* Legend under the chart */}
+      {showLegend && stacks.length > 0 && (
+        (() => {
+          const itemW = 120 // fixed width per legend item
+          const startX = paddingLeft
+          const rectY = height - legendHeight + 6
+          const textY = rectY + 12
+          return (
+            <g>
+              {stacks.map((s, i) => (
+                <g key={s.name}>
+                  <rect x={startX + i * itemW} y={rectY} width={10} height={10} fill={colorMap.get(s.name)} rx={2} ry={2} />
+                  <text x={startX + i * itemW + 16} y={textY} fontSize="11" fill="#374151">
+                    {s.name}
+                  </text>
+                </g>
+              ))}
+            </g>
+          )
+        })()
       )}
     </svg>
   )

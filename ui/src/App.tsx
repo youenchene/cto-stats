@@ -50,7 +50,7 @@ export default function App() {
             }`}
             onClick={() => setActiveTab('cloudspending')}
           >
-            Cloud Spending Follow Up
+            {t('tabs.cloudSpending')}
           </button>
         </div>
       </div>
@@ -402,6 +402,7 @@ function ThroughputBlock() {
 }
 
 function CloudSpendingBlock() {
+  const { t } = useTranslation()
   const monthlyQuery = useCloudSpendingMonthly()
   const servicesQuery = useCloudSpendingServices()
 
@@ -425,6 +426,12 @@ function CloudSpendingBlock() {
       if (provider) providers.add(provider)
     })
     
+    const colorByProvider = new Map<string, string>([
+      ['azure', '#0078D4'], // Azure blue
+      ['gcp', '#DB4437'],   // GCP red
+      ['aws', '#FF9900'],   // AWS orange
+    ])
+
     return Array.from(providers).sort().map(provider => {
       const values = monthlyLabels.map(month => {
         const row = monthlyData.find(r => r['month'] === month && r['provider'] === provider)
@@ -433,10 +440,20 @@ function CloudSpendingBlock() {
       return {
         name: provider.toUpperCase(),
         values,
-        color: provider === 'azure' ? '#0078D4' : '#4285F4'
+        color: colorByProvider.get(provider)
       }
     })
   }, [monthlyData, monthlyLabels])
+
+  // Currency detection for monthly
+  const monthlyCurrency = useMemo(() => {
+    const set = new Set<string>()
+    monthlyData.forEach(r => {
+      const c = (r['currency'] || '').toString().trim()
+      if (c) set.add(c)
+    })
+    return set.size === 1 ? Array.from(set)[0] : ''
+  }, [monthlyData])
 
   // Process services data (filtered services per month)
   const servicesLabels = useMemo(() => {
@@ -448,54 +465,55 @@ function CloudSpendingBlock() {
     return Array.from(months).sort()
   }, [servicesData])
 
-  const servicesStacks = useMemo(() => {
-    // Group by service (across providers)
-    const serviceMap = new Map<string, { provider: string, values: number[] }>()
-    
+  // Build a map: service/group -> { providers -> values[], currency }
+  const servicesByService = useMemo(() => {
+    type ProviderSeries = { name: string; values: number[]; color?: string }
+    const map = new Map<string, { stacks: ProviderSeries[]; currency: string }>()
+    // Use slightly different hues for the detailed per-service charts
+    const colorByProvider = new Map<string, string>([
+      ['azure', '#60A5FA'], // lighter Azure blue
+      ['gcp',   '#EF4444'], // vivid red
+      ['aws',   '#FDBA74'], // lighter AWS orange
+    ])
+    const tmp: Record<string, Record<string, number[]>> = {}
+    const cur: Record<string, Set<string>> = {}
     servicesData.forEach(r => {
-      const service = r['service']
+      const service = (r['group'] || r['service']) as string
       const provider = r['provider']
-      if (!service) return
-      
-      const key = `${provider}:${service}`
-      if (!serviceMap.has(key)) {
-        serviceMap.set(key, {
-          provider,
-          values: new Array(servicesLabels.length).fill(0)
-        })
-      }
-      
       const month = r['month']
-      const monthIdx = servicesLabels.indexOf(month)
-      if (monthIdx >= 0) {
-        serviceMap.get(key)!.values[monthIdx] = parseNumber(r['cost']) ?? 0
+      if (!service || !provider || !month) return
+      const idx = servicesLabels.indexOf(month)
+      if (idx < 0) return
+      if (!tmp[service]) tmp[service] = {}
+      if (!tmp[service][provider]) tmp[service][provider] = new Array(servicesLabels.length).fill(0)
+      tmp[service][provider][idx] = parseNumber(r['cost']) ?? 0
+      const c = (r['currency'] || '').toString().trim()
+      if (c) {
+        if (!cur[service]) cur[service] = new Set<string>()
+        cur[service].add(c)
       }
     })
-
-    // Convert to stacks with colors
-    const colors = [
-      '#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6',
-      '#ec4899', '#14b8a6', '#f97316', '#06b6d4', '#84cc16'
-    ]
-    
-    return Array.from(serviceMap.entries()).map(([key, data], idx) => {
-      const [provider, service] = key.split(':')
-      return {
-        name: `${service} (${provider})`,
-        values: data.values,
-        color: colors[idx % colors.length]
-      }
+    Object.keys(tmp).forEach(service => {
+      const stacks = Object.keys(tmp[service]).sort().map(provider => ({
+        name: provider.toUpperCase(),
+        values: tmp[service][provider],
+        color: colorByProvider.get(provider)
+      }))
+      const set = cur[service]
+      const currency = set && set.size === 1 ? Array.from(set)[0] : ''
+      map.set(service, { stacks, currency })
     })
+    return map
   }, [servicesData, servicesLabels])
 
   return (
     <section>
-      <h2 className="text-xl font-semibold mb-3">Cloud Spending Follow Up</h2>
+      <h2 className="text-xl font-semibold mb-3">{t('cloudSpending.sectionTitle')}</h2>
       <div className="space-y-6">
         {/* Overall costs per provider per month */}
         <Card>
           <CardHeader>
-            <CardTitle>Overall Cloud Costs per Month (Azure & GCP)</CardTitle>
+            <CardTitle>{t('cloudSpending.overallTitle')}</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="w-full overflow-x-auto">
@@ -505,34 +523,47 @@ function CloudSpendingBlock() {
                   stacks={monthlyStacks} 
                   width={Math.max(900, monthlyLabels.length * 60)} 
                   height={300} 
-                />
+                  yAxisLabel={monthlyCurrency ? `${t('cloudSpending.amount')} (${monthlyCurrency})` : t('cloudSpending.amount')}
+                  showLegend
+                /> 
               ) : (
-                <p className="text-gray-500">No data available. Run import and calculate commands with -cloudspending flag.</p>
+                <p className="text-gray-500">{t('cloudSpending.noDataOverall')}</p>
               )}
             </div>
           </CardContent>
         </Card>
 
-        {/* Service-specific costs per month */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Cloud Costs by Service per Month (Filtered)</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="w-full overflow-x-auto">
-              {servicesStacks.length > 0 ? (
-                <StackedBarChart 
-                  labels={servicesLabels} 
-                  stacks={servicesStacks} 
-                  width={Math.max(900, servicesLabels.length * 60)} 
-                  height={300} 
-                />
-              ) : (
-                <p className="text-gray-500">No data available. Configure services in config.yml and run import/calculate with -cloudspending flag.</p>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+        {/* Service-specific: one chart per service */}
+        {servicesByService.size > 0 ? (
+          Array.from(servicesByService.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([service, info]) => (
+            <Card key={service}>
+              <CardHeader>
+                <CardTitle>{service}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="w-full overflow-x-auto">
+                  <StackedBarChart
+                    labels={servicesLabels}
+                    stacks={info.stacks}
+                    width={Math.max(900, servicesLabels.length * 60)}
+                    height={280}
+                    yAxisLabel={info.currency ? `${t('cloudSpending.amount')} (${info.currency})` : t('cloudSpending.amount')}
+                    showLegend
+                  />
+                </div>
+              </CardContent>
+            </Card>
+          ))
+        ) : (
+          <Card>
+            <CardHeader>
+              <CardTitle>{t('cloudSpending.perServiceTitle')}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-gray-500">{t('cloudSpending.noDataServices')}</p>
+            </CardContent>
+          </Card>
+        )}
       </div>
     </section>
   )

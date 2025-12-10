@@ -392,9 +392,15 @@ func runCloudSpendingImport() error {
 	gcpBillingAccount := os.Getenv("GCP_BILLING_ACCOUNT")
 	gcpServiceAccountJSON := os.Getenv("GCP_SERVICE_ACCOUNT_JSON")
 
-	if gcpProjectID != "" && gcpBillingAccount != "" && gcpServiceAccountJSON != "" {
-		slog.Info("cloudspending.gcp.fetch.start")
-		gcpClient := gcp.NewClient(gcpProjectID, gcpBillingAccount, gcpServiceAccountJSON)
+	// Allow ADC: proceed if project and billing account are set. Service account JSON is optional now.
+	if gcpProjectID != "" && gcpBillingAccount != "" {
+		gcpLocation := os.Getenv("GCP_BIGQUERY_LOCATION") // e.g., EU, US, europe-west1
+		if gcpLocation == "" {
+			slog.Info("cloudspending.gcp.fetch.start", "project", gcpProjectID, "billing", gcpBillingAccount)
+		} else {
+			slog.Info("cloudspending.gcp.fetch.start", "project", gcpProjectID, "billing", gcpBillingAccount, "location", gcpLocation)
+		}
+		gcpClient := gcp.NewClient(gcpProjectID, gcpBillingAccount, gcpServiceAccountJSON, gcpLocation)
 		gcpRecords, err := gcpClient.FetchCosts(ctx, 24)
 		if err != nil {
 			slog.Warn("cloudspending.gcp.fetch.error", "error", err)
@@ -404,7 +410,7 @@ func runCloudSpendingImport() error {
 			slog.Info("cloudspending.gcp.fetch.done", "count", len(gcpRecords))
 		}
 	} else {
-		slog.Info("cloudspending.gcp.skip", "reason", "missing environment variables")
+		slog.Info("cloudspending.gcp.skip", "reason", "missing GCP_PROJECT_ID or GCP_BILLING_ACCOUNT")
 	}
 
 	// Write to CSV

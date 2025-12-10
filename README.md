@@ -8,7 +8,7 @@ The generated KPI are :
  - **Lead time** and **cycle time** trend
  - **Stocks** per week : **Red Bin** for bug and **stocks** per **development process steps**.
  - **Statistics controlled** weekly **throughput** (issues closed per week)
- - **Cloud spending follow-up**: monthly Azure & GCP costs overall and per service
+ - **Cloud spending follow-up**: monthly Azure & GCP costs overall and per service/group
 
 Current sources are :
  - github issues of a github organization.
@@ -71,8 +71,8 @@ Basic indicator to identify Change request event per week on pull requests.
 ### Cloud Spending Follow-Up
 
 Tracks cloud infrastructure spending over time from Azure and GCP. Two visualizations are provided:
-- **Overall costs per month**: Shows total spending per cloud provider (Azure & GCP) aggregated monthly
-- **Service-specific costs per month**: Shows spending breakdown by specific cloud services (configurable in `config.yml`)
+- **Overall costs per month**: Shows total spending per cloud provider (Azure & GCP) aggregated monthly.
+- **Per service/group costs per month**: Shows spending breakdown by logical groups (preferred) or by individual services, as configured in `config.yml`.
 
 This helps identify cost trends, compare spending across providers, and track specific services that contribute most to cloud expenses.
 
@@ -92,6 +92,12 @@ Cloud Spending (optional, only needed for `--cloudspending` scope):
 - **GCP_PROJECT_ID**: GCP project ID
 - **GCP_BILLING_ACCOUNT**: GCP billing account ID (format: `billingAccounts/XXXXXX-XXXXXX-XXXXXX`)
 - **GCP_SERVICE_ACCOUNT_JSON**: GCP service account JSON key (as a string or path to JSON file)
+
+
+#### Service Account Permissions on GCP
+
+- Big Query Data Viewer
+- Big Query Job User
 
 ## Usage
 
@@ -133,7 +139,7 @@ GITHUB_TOKEN=ghp_xxx CONFIG_PATH=./config.yml go run . calculate --issues
 # Calculate only PR change-requests KPIs (weekly, per-repo)
 GITHUB_TOKEN=ghp_xxx go run . calculate --pr
 
-# Calculate cloud spending aggregations (monthly and per-service)
+# Calculate cloud spending aggregations (monthly and per-service/group)
 CONFIG_PATH=./config.yml go run . calculate --cloudspending
 
 # Serve the dashboard
@@ -222,19 +228,57 @@ Available API endpoints :
 - GET /api/cloud_spending/monthly → data/cloud_spending_monthly.csv
 - GET /api/cloud_spending/services → data/cloud_spending_services.csv
 
+Cloud Spending CSV formats:
+
+- data/cloud_spending_monthly.csv
+  - Headers: `month,provider,cost,currency`
+  - Rows are aggregated by month, provider, and currency (no cross-currency mixing).
+
+- data/cloud_spending_services.csv
+  - Headers depend on your configuration:
+    - Grouped mode: `month,provider,group,cost,currency`
+    - Legacy flat mode: `month,provider,service,cost,currency`
+  - Rows are aggregated by month, provider, and group/service, and currency (no cross-currency mixing).
+  - If you configure `cloudspending.detailed_service` with groups, only services belonging to the defined groups are included (and exposed under the `group` column). If you configure a flat list (legacy), only those services are included (under the `service` column).
+
 ### Configuration (config.yml)
 
 The `config.yml` file allows customization of GitHub project mappings and cloud spending service filters.
 
-**Cloud Spending Configuration:**
+**Cloud Spending Configuration (preferred grouped mode):**
 
-Add a `cloud_spending` section to filter which services appear in the detailed service chart:
+Define logical groups that aggregate several concrete services. The UI will display one chart per group.
+
+```yaml
+cloudspending:
+  detailed_service:
+    - name: "AI"
+      services:
+        - "Vertex AI"
+        - "Claude Sonnet 4.5"
+    - name: "Databases"
+      services:
+        - "Cloud SQL"
+        - "BigQuery"
+```
+
+Legacy/alternate shapes also supported (backward compatible):
+
+1) Flat list under `cloudspending.detailed_service` (strings). This behaves like a simple filter list and the CSV exposes the `service` column.
+
+```yaml
+cloudspending:
+  detailed_service:
+    - "Vertex AI"
+    - "Compute Engine"
+    - "Cloud Run"
+```
+
+2) Flat list under `cloud_spending.services` (older config key). Same behavior as above.
 
 ```yaml
 cloud_spending:
   services:
-    # List of cloud services to track in the detailed service chart
-    # Leave empty to track all services, or specify services by name
     - "Virtual Machines"
     - "Azure Kubernetes Service"
     - "Storage Accounts"
@@ -243,7 +287,11 @@ cloud_spending:
     - "Google Kubernetes Engine"
 ```
 
-When services are specified, only those services will appear in the "Cloud Costs by Service per Month" chart. The overall chart always shows total costs per provider regardless of this filter.
+Notes:
+- If groups are configured, the services CSV uses a `group` column and only includes services that belong to a configured group.
+- If only flat lists are provided, the services CSV uses a `service` column and includes only those services.
+- The monthly overall CSV is unaffected by filters/groups; it always shows total cost per provider.
+- Amounts are shown with their original currency. If multiple currencies exist in your dataset, aggregations are kept per currency (no conversion).
 
 ## How to build and run with Docker
 
