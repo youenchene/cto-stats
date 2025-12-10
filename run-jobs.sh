@@ -23,6 +23,21 @@ if ! cto-stats calculate --issues; then
   exit 1
 fi
 
+
+log "Start Cloud Spending"
+
+# Run import (org and other filters are taken from config.yml if provided via CONFIG_PATH)
+if ! cto-stats import --cloudspending; then
+  log "Import failed"
+  exit 1
+fi
+
+# Run calculate
+if ! cto-stats calculate --cloudspending; then
+  log "Calculate failed"
+  exit 1
+fi
+
 log "Start PR import & calculate"
 
 if ! cto-stats import --pr; then
