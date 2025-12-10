@@ -6,7 +6,8 @@
   },
   "tabs": {
     "general": "General",
-    "devProcess": "Developer Process Insights"
+    "devProcess": "Developer Process Insights",
+    "cloudSpending": "Cloud Spending"
   },
   "units": {
     "days": "Days",
@@ -43,6 +44,14 @@
   },
   "chart": {
     "total": "Total"
+  },
+  "cloudSpending": {
+    "sectionTitle": "Cloud Spending",
+    "overallTitle": "Overall Cloud Costs per Month",
+    "perServiceTitle": "Cloud Costs by Service per Month (Filtered)",
+    "amount": "Amount",
+    "noDataOverall": "No data available. Run import and calculate commands with -cloudspending flag.",
+    "noDataServices": "No data available. Configure services in config.yml and run import/calculate with -cloudspending flag."
   },
   "devProcess": {
     "sectionTitle": "Developer Process Insights",

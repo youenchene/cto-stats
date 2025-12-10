@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { useCycleTimes, useStocks, useStocksWeek, useThroughputWeek, usePRChangeRequestsWeek } from './api'
+import { useCycleTimes, useStocks, useStocksWeek, useThroughputWeek, usePRChangeRequestsWeek, useCloudSpendingMonthly, useCloudSpendingServices } from './api'
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card'
 import { Sparkline } from './components/Sparkline'
 import { LineChart, Point } from './components/LineChart'
@@ -22,7 +22,7 @@ function BigNumber({ label, value, unit }: { label: string; value: number | null
 
 export default function App() {
   const { t } = useTranslation()
-  const [activeTab, setActiveTab] = useState<'general' | 'dev'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'dev' | 'cloudspending'>('general')
   return (
     <div className="min-h-full p-6 space-y-8">
       <h1 className="text-2xl font-semibold tracking-tight">{t('common.appTitle')}</h1>
@@ -44,6 +44,14 @@ export default function App() {
           >
             {t('tabs.devProcess')}
           </button>
+          <button
+            className={`px-3 py-2 -mb-px border-b-2 ${
+              activeTab === 'cloudspending' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-600'
+            }`}
+            onClick={() => setActiveTab('cloudspending')}
+          >
+            {t('tabs.cloudSpending')}
+          </button>
         </div>
       </div>
       {activeTab === 'general' ? (
@@ -52,9 +60,13 @@ export default function App() {
           <StocksBlock />
           <ThroughputBlock />
         </>
-      ) : (
+      ) : activeTab === 'dev' ? (
         <>
           <DevProcessBlock />
+        </>
+      ) : (
+        <>
+          <CloudSpendingBlock />
         </>
       )}
     </div>
@@ -385,6 +397,174 @@ function ThroughputBlock() {
             <p className="mt-2 text-xs text-gray-500">{t('throughput.specialCauseDescription')}</p>
         </CardContent>
       </Card>
+    </section>
+  )
+}
+
+function CloudSpendingBlock() {
+  const { t } = useTranslation()
+  const monthlyQuery = useCloudSpendingMonthly()
+  const servicesQuery = useCloudSpendingServices()
+
+  const monthlyData = monthlyQuery.data ?? []
+  const servicesData = servicesQuery.data ?? []
+
+  // Process overall monthly data (Azure & GCP per month)
+  const monthlyLabels = useMemo(() => {
+    const months = new Set<string>()
+    monthlyData.forEach(r => {
+      const month = r['month']
+      if (month) months.add(month)
+    })
+    return Array.from(months).sort()
+  }, [monthlyData])
+
+  const monthlyStacks = useMemo(() => {
+    const providers = new Set<string>()
+    monthlyData.forEach(r => {
+      const provider = r['provider']
+      if (provider) providers.add(provider)
+    })
+    
+    const colorByProvider = new Map<string, string>([
+      ['azure', '#0078D4'], // Azure blue
+      ['gcp', '#DB4437'],   // GCP red
+      ['aws', '#FF9900'],   // AWS orange
+    ])
+
+    return Array.from(providers).sort().map(provider => {
+      const values = monthlyLabels.map(month => {
+        const row = monthlyData.find(r => r['month'] === month && r['provider'] === provider)
+        return row ? parseNumber(row['cost']) ?? 0 : 0
+      })
+      return {
+        name: provider.toUpperCase(),
+        values,
+        color: colorByProvider.get(provider)
+      }
+    })
+  }, [monthlyData, monthlyLabels])
+
+  // Currency detection for monthly
+  const monthlyCurrency = useMemo(() => {
+    const set = new Set<string>()
+    monthlyData.forEach(r => {
+      const c = (r['currency'] || '').toString().trim()
+      if (c) set.add(c)
+    })
+    return set.size === 1 ? Array.from(set)[0] : ''
+  }, [monthlyData])
+
+  // Process services data (filtered services per month)
+  const servicesLabels = useMemo(() => {
+    const months = new Set<string>()
+    servicesData.forEach(r => {
+      const month = r['month']
+      if (month) months.add(month)
+    })
+    return Array.from(months).sort()
+  }, [servicesData])
+
+  // Build a map: service/group -> { providers -> values[], currency }
+  const servicesByService = useMemo(() => {
+    type ProviderSeries = { name: string; values: number[]; color?: string }
+    const map = new Map<string, { stacks: ProviderSeries[]; currency: string }>()
+    // Use slightly different hues for the detailed per-service charts
+    const colorByProvider = new Map<string, string>([
+      ['azure', '#60A5FA'], // lighter Azure blue
+      ['gcp',   '#EF4444'], // vivid red
+      ['aws',   '#FDBA74'], // lighter AWS orange
+    ])
+    const tmp: Record<string, Record<string, number[]>> = {}
+    const cur: Record<string, Set<string>> = {}
+    servicesData.forEach(r => {
+      const service = (r['group'] || r['service']) as string
+      const provider = r['provider']
+      const month = r['month']
+      if (!service || !provider || !month) return
+      const idx = servicesLabels.indexOf(month)
+      if (idx < 0) return
+      if (!tmp[service]) tmp[service] = {}
+      if (!tmp[service][provider]) tmp[service][provider] = new Array(servicesLabels.length).fill(0)
+      tmp[service][provider][idx] = parseNumber(r['cost']) ?? 0
+      const c = (r['currency'] || '').toString().trim()
+      if (c) {
+        if (!cur[service]) cur[service] = new Set<string>()
+        cur[service].add(c)
+      }
+    })
+    Object.keys(tmp).forEach(service => {
+      const stacks = Object.keys(tmp[service]).sort().map(provider => ({
+        name: provider.toUpperCase(),
+        values: tmp[service][provider],
+        color: colorByProvider.get(provider)
+      }))
+      const set = cur[service]
+      const currency = set && set.size === 1 ? Array.from(set)[0] : ''
+      map.set(service, { stacks, currency })
+    })
+    return map
+  }, [servicesData, servicesLabels])
+
+  return (
+    <section>
+      <h2 className="text-xl font-semibold mb-3">{t('cloudSpending.sectionTitle')}</h2>
+      <div className="space-y-6">
+        {/* Overall costs per provider per month */}
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('cloudSpending.overallTitle')}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="w-full overflow-x-auto">
+              {monthlyStacks.length > 0 ? (
+                <StackedBarChart 
+                  labels={monthlyLabels} 
+                  stacks={monthlyStacks} 
+                  width={Math.max(900, monthlyLabels.length * 60)} 
+                  height={300} 
+                  yAxisLabel={monthlyCurrency ? `${t('cloudSpending.amount')} (${monthlyCurrency})` : t('cloudSpending.amount')}
+                  showLegend
+                /> 
+              ) : (
+                <p className="text-gray-500">{t('cloudSpending.noDataOverall')}</p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Service-specific: one chart per service */}
+        {servicesByService.size > 0 ? (
+          Array.from(servicesByService.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([service, info]) => (
+            <Card key={service}>
+              <CardHeader>
+                <CardTitle>{service}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="w-full overflow-x-auto">
+                  <StackedBarChart
+                    labels={servicesLabels}
+                    stacks={info.stacks}
+                    width={Math.max(900, servicesLabels.length * 60)}
+                    height={280}
+                    yAxisLabel={info.currency ? `${t('cloudSpending.amount')} (${info.currency})` : t('cloudSpending.amount')}
+                    showLegend
+                  />
+                </div>
+              </CardContent>
+            </Card>
+          ))
+        ) : (
+          <Card>
+            <CardHeader>
+              <CardTitle>{t('cloudSpending.perServiceTitle')}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-gray-500">{t('cloudSpending.noDataServices')}</p>
+            </CardContent>
+          </Card>
+        )}
+      </div>
     </section>
   )
 }
