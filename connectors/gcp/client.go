@@ -108,16 +108,11 @@ type bigQueryResponse struct {
 }
 
 // FetchCosts retrieves cost data grouped by service for the last N months
-func (c *Client) FetchCosts(ctx context.Context, months int) ([]cloudspending.CostRecord, error) {
-	// Calculate date range (last N months)
-	to := time.Now()
-	from := to.AddDate(0, -months, 0)
+func (c *Client) FetchCosts(ctx context.Context) ([]cloudspending.CostRecord, error) {
 
 	// Format dates for BigQuery (YYYYMMDD)
-	fromStr := from.Format("20060102")
-	toStr := to.Format("20060102")
 
-	slog.Info("phase.gcp.costs.fetch.start", "from", fromStr, "to", toStr)
+	slog.Info("phase.gcp.costs.fetch.start")
 	// Build BigQuery SQL query
 	// Note: This assumes billing export is set up to BigQuery
 	// Table format: PROJECT_ID.DATASET.gcp_billing_export_v1_BILLING_ACCOUNT_ID
@@ -133,7 +128,7 @@ func (c *Client) FetchCosts(ctx context.Context, months int) ([]cloudspending.Co
 			month, service_name, currency
 		ORDER BY
 			month, service_name
-	`, c.projectID, fromStr, toStr)
+	`, c.projectID)
 
 	reqBody := bigQueryRequest{
 		Query:        query,

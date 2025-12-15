@@ -367,21 +367,34 @@ func runCloudSpendingImport() error {
 	var allRecords []cloudspending.CostRecord
 
 	// Fetch Azure costs (last 24 months)
-	azureSubscriptionID := os.Getenv("AZURE_SUBSCRIPTION_ID")
+	// Support multiple subscription IDs separated by commas
+	azureSubscriptionIDs := os.Getenv("AZURE_SUBSCRIPTION_ID")
 	azureTenantID := os.Getenv("AZURE_TENANT_ID")
 	azureClientID := os.Getenv("AZURE_CLIENT_ID")
 	azureClientSecret := os.Getenv("AZURE_CLIENT_SECRET")
 
-	if azureSubscriptionID != "" && azureTenantID != "" && azureClientID != "" && azureClientSecret != "" {
+	if azureSubscriptionIDs != "" && azureTenantID != "" && azureClientID != "" && azureClientSecret != "" {
 		slog.Info("cloudspending.azure.fetch.start")
-		azureClient := azure.NewClient(azureSubscriptionID, azureTenantID, azureClientID, azureClientSecret)
-		azureRecords, err := azureClient.FetchCosts(ctx, 24)
-		if err != nil {
-			slog.Warn("cloudspending.azure.fetch.error", "error", err)
-			fmt.Fprintf(os.Stderr, "Warning: failed to fetch Azure costs: %v\n", err)
-		} else {
-			allRecords = append(allRecords, azureRecords...)
-			slog.Info("cloudspending.azure.fetch.done", "count", len(azureRecords))
+
+		// Split subscription IDs by comma to support multiple subscriptions
+		subscriptionList := strings.Split(azureSubscriptionIDs, ",")
+
+		for _, subID := range subscriptionList {
+			subID = strings.TrimSpace(subID)
+			if subID == "" {
+				continue
+			}
+
+			slog.Info("cloudspending.azure.fetch.subscription", "subscription_id", subID)
+			azureClient := azure.NewClient(subID, azureTenantID, azureClientID, azureClientSecret)
+			azureRecords, err := azureClient.FetchCosts(ctx, 24)
+			if err != nil {
+				slog.Warn("cloudspending.azure.fetch.error", "subscription_id", subID, "error", err)
+				fmt.Fprintf(os.Stderr, "Warning: failed to fetch Azure costs for subscription %s: %v\n", subID, err)
+			} else {
+				allRecords = append(allRecords, azureRecords...)
+				slog.Info("cloudspending.azure.fetch.done", "subscription_id", subID, "count", len(azureRecords))
+			}
 		}
 	} else {
 		slog.Info("cloudspending.azure.skip", "reason", "missing environment variables")
@@ -401,7 +414,7 @@ func runCloudSpendingImport() error {
 			slog.Info("cloudspending.gcp.fetch.start", "project", gcpProjectID, "billing", gcpBillingAccount, "location", gcpLocation)
 		}
 		gcpClient := gcp.NewClient(gcpProjectID, gcpBillingAccount, gcpServiceAccountJSON, gcpLocation)
-		gcpRecords, err := gcpClient.FetchCosts(ctx, 24)
+		gcpRecords, err := gcpClient.FetchCosts(ctx)
 		if err != nil {
 			slog.Warn("cloudspending.gcp.fetch.error", "error", err)
 			fmt.Fprintf(os.Stderr, "Warning: failed to fetch GCP costs: %v\n", err)

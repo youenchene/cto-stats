@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -122,79 +123,107 @@ type columnDef struct {
 }
 
 // FetchCosts retrieves cost data grouped by service for the last N months
+// Azure Cost Management API limits custom time periods to a maximum of 1 year.
+// We therefore split requests into windows of up to 12 months and aggregate results.
 func (c *Client) FetchCosts(ctx context.Context, months int) ([]cloudspending.CostRecord, error) {
 	if err := c.authenticate(ctx); err != nil {
 		return nil, err
 	}
 
-	// Calculate date range (last N months)
-	to := time.Now()
-	from := to.AddDate(0, -months, 0)
+	if months <= 0 {
+		return []cloudspending.CostRecord{}, nil
+	}
 
-	// Format dates as YYYY-MM-DD
-	fromStr := from.Format("2006-01-02")
-	toStr := to.Format("2006-01-02")
+	// Align to month boundaries to avoid 12 months + extra days problems.
+	now := time.Now().UTC()
+	// Exclusive end = first day of current month (we fetch full months only)
+	endExclusive := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	// Start at the first day of the month `months` back from endExclusive
+	start := endExclusive.AddDate(0, -months, 0)
 
-	// Build query request
-	reqBody := costQueryRequest{
-		Type:      "ActualCost",
-		Timeframe: "Custom",
-		TimePeriod: &timePeriod{
-			From: fromStr,
-			To:   toStr,
-		},
-		Dataset: datasetRequest{
-			Granularity: "Monthly",
-			Aggregation: map[string]aggDef{
-				"totalCost": {
-					Name:     "Cost",
-					Function: "Sum",
+	// Iterate over windows of up to 12 months (strict calendar months)
+	const maxWindowMonths = 12
+	windowStart := start
+
+	var all []cloudspending.CostRecord
+	for windowStart.Before(endExclusive) {
+		// End of current window (exclusive upper bound on months); cap to endExclusive
+		windowEndExclusive := windowStart.AddDate(0, maxWindowMonths, 0)
+		if windowEndExclusive.After(endExclusive) {
+			windowEndExclusive = endExclusive
+		}
+
+		// Safety: ensure window is not longer than 12 months
+		if !windowEndExclusive.After(windowStart) {
+			break
+		}
+
+		// Build query body for current window
+		// Log the window for diagnostic purposes
+		slog.Info("cloudspending.azure.fetch.window", "from", windowStart.Format("2006-01-01"), "to", windowEndExclusive.AddDate(0, 0, -1).Format("2006-01-02"))
+
+		reqBody := costQueryRequest{
+			Type:      "ActualCost",
+			Timeframe: "Custom",
+			TimePeriod: &timePeriod{
+				From: windowStart.Format("2006-01-02"),
+				// Azure expects an inclusive end date; convert exclusive month end to inclusive previous day
+				To: windowEndExclusive.AddDate(0, 0, -1).Format("2006-01-02"),
+			},
+			Dataset: datasetRequest{
+				Granularity: "Monthly",
+				Aggregation: map[string]aggDef{
+					"totalCost": {Name: "Cost", Function: "Sum"},
 				},
+				Grouping: []groupingDef{{Type: "Dimension", Name: "ServiceName"}},
 			},
-			Grouping: []groupingDef{
-				{Type: "Dimension", Name: "ServiceName"},
-			},
-		},
+		}
+
+		jsonData, err := json.Marshal(reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal request: %w", err)
+		}
+
+		url := fmt.Sprintf("https://management.azure.com/subscriptions/%s/providers/Microsoft.CostManagement/query?api-version=2023-03-01",
+			c.subscriptionID)
+
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch costs: %w", err)
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("failed to read response: %w", readErr)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("API request failed: %d %s", resp.StatusCode, string(body))
+		}
+
+		var queryResp costQueryResponse
+		if err := json.Unmarshal(body, &queryResp); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %w", err)
+		}
+
+		windowRecords, err := c.parseResponse(&queryResp, string(body))
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, windowRecords...)
+
+		// Advance to next window starting exactly at the previous exclusive end
+		windowStart = windowEndExclusive
 	}
 
-	jsonData, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	// Make API request
-	url := fmt.Sprintf("https://management.azure.com/subscriptions/%s/providers/Microsoft.CostManagement/query?api-version=2023-03-01",
-		c.subscriptionID)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch costs: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API request failed: %d %s", resp.StatusCode, string(body))
-	}
-
-	var queryResp costQueryResponse
-	if err := json.Unmarshal(body, &queryResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	// Parse response into CostRecords
-	return c.parseResponse(&queryResp, string(body))
+	return all, nil
 }
 
 // parseResponse converts Azure API response to CostRecord slice
@@ -240,19 +269,22 @@ func (c *Client) parseResponse(resp *costQueryResponse, rawData string) ([]cloud
 			continue
 		}
 
-		// Parse date (format: YYYYMMDD or YYYY-MM-DD)
+		// Parse date (format: YYYYMMDD, YYYY-MM-DD, or ISO datetime)
 		dateVal, ok := row[dateIdx].(float64)
 		if !ok {
 			dateStr, ok := row[dateIdx].(string)
 			if !ok {
 				continue
 			}
-			// Parse string date
-			monthTime, err := time.Parse("20060102", dateStr)
+			// Parse string date - try ISO datetime format first
+			monthTime, err := time.Parse("2006-01-02T15:04:05", dateStr)
 			if err != nil {
-				monthTime, err = time.Parse("2006-01-02", dateStr)
+				monthTime, err = time.Parse("20060102", dateStr)
 				if err != nil {
-					continue
+					monthTime, err = time.Parse("2006-01-02", dateStr)
+					if err != nil {
+						continue
+					}
 				}
 			}
 
