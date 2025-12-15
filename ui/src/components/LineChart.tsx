@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react'
+import { formatNumber } from '../lib/utils'
 
 export type Point = { label: string; value: number }
 
@@ -93,7 +94,7 @@ export function LineChart({
             <g key={i}>
               <line x1={leftPad - 4} y1={y(v)} x2={leftPad} y2={y(v)} stroke="#e5e7eb" />
               <text x={leftPad - 4 - 6} y={y(v)} textAnchor="end" alignmentBaseline="middle" fontSize="10" fill="#6b7280">
-                {v.toFixed(0)}
+                {formatNumber(v)}
               </text>
             </g>
           ))}

@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { formatNumber } from '../lib/utils'
 
 export type StackSeries = { name: string; values: number[]; color?: string }
 
@@ -118,8 +119,8 @@ export function StackedBarChart({
           {yTickVals.map((v, i) => (
             <g key={i}>
               <line x1={paddingLeft - 4} y1={y(v)} x2={paddingLeft} y2={y(v)} stroke="#e5e7eb" />
-              <text x={8} y={y(v)} textAnchor="start" alignmentBaseline="middle" fontSize="10" fill="#6b7280">
-                {v.toFixed(0)}
+              <text x={paddingLeft - 10} y={y(v)} textAnchor="end" alignmentBaseline="middle" fontSize="10" fill="#6b7280">
+                {formatNumber(v)}
               </text>
             </g>
           ))}
@@ -187,12 +188,12 @@ export function StackedBarChart({
               return (
                 <g>
                   <rect x={tx} y={ty} width={tooltipW} height={tooltipH} fill="#ffffff" stroke="#e5e7eb" rx={6} ry={6} />
-                  <text x={tx + 8} y={titleY} fontSize="11" fill="#111827">{hoverData.label} — {t('chart.total')} {hoverData.total.toFixed(0)}</text>
+                  <text x={tx + 8} y={titleY} fontSize="11" fill="#111827">{hoverData.label} — {t('chart.total')} {formatNumber(hoverData.total)}</text>
                   {items.map((p, idx) => (
                     <g key={idx}>
                       <rect x={tx + 8} y={firstItemBaseY + idx * itemLineHeight - 8} width={8} height={8} fill={p.color} />
                       <text x={tx + 20} y={firstItemBaseY + idx * itemLineHeight} fontSize="11" fill="#374151">
-                        {p.name}: {p.value.toFixed(0)} ({p.percent}%)
+                        {p.name}: {formatNumber(p.value)} ({p.percent}%)
                       </text>
                     </g>
                   ))}

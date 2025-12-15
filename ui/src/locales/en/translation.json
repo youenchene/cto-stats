@@ -49,7 +49,7 @@
     "sectionTitle": "Cloud Spending",
     "overallTitle": "Overall Cloud Costs per Month",
     "perServiceTitle": "Cloud Costs by Service per Month (Filtered)",
-    "amount": "Amount",
+    "amount": "Amount (Without Tax)",
     "noDataOverall": "No data available. Run import and calculate commands with -cloudspending flag.",
     "noDataServices": "No data available. Configure services in config.yml and run import/calculate with -cloudspending flag."
   },
