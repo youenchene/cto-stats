@@ -261,7 +261,7 @@ func Run(args []string) error {
 		}
 
 		// Step 5: weekly stocks per project by ISO year-week (cutoff at Sunday 23:59:59 UTC)
-		if err := writeWeeklyStocks(filepath.Join(base, "stocks_week.csv"), openIssues); err != nil {
+		if err := writeWeeklyStocks(filepath.Join(base, "stocks_week.csv"), allIssues); err != nil {
 			return err
 		}
 	}
@@ -999,16 +999,17 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 		Agg                    agg
 	}
 	// Helper: determine stage at cutoff
-	stageAt := func(r calculatedIssue, cutoff time.Time) (openedBug bool, inBacklog bool, inReady bool, inDev bool, inReview bool, inQA bool, waiting bool) {
+	stageAt := func(r calculatedIssue, weekStart time.Time, cutoff time.Time) (openedBug bool, inBacklog bool, inReady bool, inDev bool, inReview bool, inQA bool, waiting bool) {
 		cu := cutoff
 		// Not yet created
 		if timeUTC(r.CreationDatetime).After(cu) {
 			return false, false, false, false, false, false, false
 		}
-		// If ended before or at cutoff, it is not in stock
-		if r.EndDatetime != nil && !r.EndDatetime.UTC().After(cu) {
+		// If ended before week start, it is not in stock for this week
+		if r.EndDatetime != nil && r.EndDatetime.UTC().Before(weekStart) {
 			return false, false, false, false, false, false, false
 		}
+		// Bug is in stock from creation until closure
 		openedBug = r.Bug
 		// Helper to check ts <= cutoff
 		le := func(t *time.Time) bool { return t != nil && !t.UTC().After(cu) }
@@ -1044,7 +1045,7 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 		y, w := cur.ISOWeek()
 		projMap := map[string]rec{}
 		for _, r := range rows {
-			ob, ib, iready, id, ir, iq, iw := stageAt(r, cutoff)
+			ob, ib, iready, id, ir, iq, iw := stageAt(r, cur, cutoff)
 			if !(ob || ib || iready || id || ir || iq || iw) {
 				continue
 			}
