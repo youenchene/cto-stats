@@ -414,7 +414,7 @@ func runCloudSpendingImport() error {
 			slog.Info("cloudspending.gcp.fetch.start", "project", gcpProjectID, "billing", gcpBillingAccount, "location", gcpLocation)
 		}
 		gcpClient := gcp.NewClient(gcpProjectID, gcpBillingAccount, gcpServiceAccountJSON, gcpLocation)
-		gcpRecords, err := gcpClient.FetchCosts(ctx, 24)
+		gcpRecords, err := gcpClient.FetchCosts(ctx)
 		if err != nil {
 			slog.Warn("cloudspending.gcp.fetch.error", "error", err)
 			fmt.Fprintf(os.Stderr, "Warning: failed to fetch GCP costs: %v\n", err)
