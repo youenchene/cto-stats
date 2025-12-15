@@ -85,7 +85,7 @@ Environment variables:
 - **CONFIG_PATH**: (optional) path to config.yml (defaults to `./config.yml`)
 
 Cloud Spending (optional, only needed for `--cloudspending` scope):
-- **AZURE_SUBSCRIPTION_ID**: Azure subscription ID
+- **AZURE_SUBSCRIPTION_ID**: Azure subscription ID (supports multiple subscriptions separated by commas, e.g., `sub-id-1,sub-id-2`)
 - **AZURE_TENANT_ID**: Azure AD tenant ID
 - **AZURE_CLIENT_ID**: Azure service principal client ID
 - **AZURE_CLIENT_SECRET**: Azure service principal client secret
@@ -377,6 +377,7 @@ Notes:
   - By default, the cron job runs `import --issues --pr` and `calculate --issues --pr`. To include cloud spending data, you must provide the Azure/GCP environment variables and the job will automatically include `--cloudspending` scope.
 - The web UI is available at http://localhost:8080/ (APIs under `/api/*`).
 - Cloud spending environment variables (Azure and GCP) are optional. If not provided, only GitHub data will be imported.
+- **Multiple Azure subscriptions**: To combine costs from multiple Azure subscriptions, provide comma-separated subscription IDs: `-e AZURE_SUBSCRIPTION_ID="sub-id-1,sub-id-2"`. All costs will be aggregated in the same CSV. Ensure your service principal has `Cost Management Reader` role on all subscriptions.
 - `CONFIG_PATH` defaults to `/config/config.yml`. You can override if you mount elsewhere:
 
 ```bash
