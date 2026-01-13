@@ -1583,12 +1583,16 @@ func runCloudSpendingCalculate() error {
 
 	var serviceFilter []string
 	var groups []config.DetailedServiceGroup
+	var compared []config.ComparedService
 	if _, err := os.Stat(cfgPath); err == nil {
 		cfg, err := config.Load(cfgPath)
 		if err == nil {
 			serviceFilter = cfg.CloudSpending.Services
 			if len(cfg.CloudSpending.DetailedService) > 0 {
 				groups = cfg.CloudSpending.DetailedService
+			}
+			if len(cfg.CloudSpending.ComparedService) > 0 {
+				compared = cfg.CloudSpending.ComparedService
 			}
 		}
 	}
@@ -1618,6 +1622,15 @@ func runCloudSpendingCalculate() error {
 		return fmt.Errorf("failed to write services aggregation: %w", err)
 	}
 	slog.Info("cloudspending.calculate.services.done", "output", servicesPath)
+
+	// Aggregate compared services
+	if len(compared) > 0 {
+		comparedPath := filepath.Join("data", "cloud_spending_compared.csv")
+		if err := writeCloudSpendingCompared(comparedPath, records, compared); err != nil {
+			return fmt.Errorf("failed to write compared aggregation: %w", err)
+		}
+		slog.Info("cloudspending.calculate.compared.done", "output", comparedPath)
+	}
 
 	slog.Info("cloudspending.calculate.done")
 	return nil
@@ -1876,5 +1889,101 @@ func writeCloudSpendingServices(path string, records []cloudCostRecord, groups [
 		}
 	}
 
+	return w.Error()
+}
+
+func writeCloudSpendingCompared(path string, records []cloudCostRecord, comparisons []config.ComparedService) error {
+	// Build map: comparison_name -> service -> group_name
+	compToServiceToGroup := make(map[string]map[string]string)
+	for _, comp := range comparisons {
+		serviceToGroup := make(map[string]string)
+		for _, g := range comp.Groups {
+			gname := strings.TrimSpace(g.Name)
+			for _, s := range g.Services {
+				serviceToGroup[strings.TrimSpace(s)] = gname
+			}
+		}
+		compToServiceToGroup[comp.Name] = serviceToGroup
+	}
+
+	type key struct {
+		Comparison string
+		Group      string
+		Month      string
+		Currency   string
+	}
+	agg := make(map[key]float64)
+
+	for _, r := range records {
+		month := r.Month.Format("2006-01")
+		currency := strings.TrimSpace(r.Currency)
+
+		for _, comp := range comparisons {
+			serviceToGroup := compToServiceToGroup[comp.Name]
+			gname, ok := serviceToGroup[r.Service]
+			if !ok || gname == "" {
+				continue
+			}
+
+			k := key{
+				Comparison: comp.Name,
+				Group:      gname,
+				Month:      month,
+				Currency:   currency,
+			}
+			agg[k] += r.Cost
+		}
+	}
+
+	type row struct {
+		Comparison string
+		Month      string
+		Group      string
+		Cost       float64
+		Currency   string
+	}
+	var rows []row
+	for k, cost := range agg {
+		rows = append(rows, row{
+			Comparison: k.Comparison,
+			Month:      k.Month,
+			Group:      k.Group,
+			Cost:       cost,
+			Currency:   k.Currency,
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Comparison != rows[j].Comparison {
+			return rows[i].Comparison < rows[j].Comparison
+		}
+		if rows[i].Month != rows[j].Month {
+			return rows[i].Month < rows[j].Month
+		}
+		if rows[i].Group != rows[j].Group {
+			return rows[i].Group < rows[j].Group
+		}
+		return rows[i].Currency < rows[j].Currency
+	})
+
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write([]string{"comparison", "month", "group", "cost", "currency"}); err != nil {
+		return err
+	}
+	for _, r := range rows {
+		if err := w.Write([]string{r.Comparison, r.Month, r.Group, fmt.Sprintf("%.2f", r.Cost), r.Currency}); err != nil {
+			return err
+		}
+	}
 	return w.Error()
 }

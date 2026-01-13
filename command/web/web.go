@@ -71,6 +71,7 @@ func Run(args []string) error {
 	serveCSV("/api/pr/change_requests/repo_dist", "pr_change_requests_repo_dist.csv")
 	serveCSV("/api/cloud_spending/monthly", "cloud_spending_monthly.csv")
 	serveCSV("/api/cloud_spending/services", "cloud_spending_services.csv")
+	serveCSV("/api/cloud_spending/compared", "cloud_spending_compared.csv")
 
 	// Static UI (optional)
 	indexPath := filepath.Join(*uiDir, "index.html")

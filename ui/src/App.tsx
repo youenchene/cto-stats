@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { useCycleTimes, useStocks, useStocksWeek, useThroughputWeek, usePRChangeRequestsWeek, useCloudSpendingMonthly, useCloudSpendingServices } from './api'
+import { useCycleTimes, useStocks, useStocksWeek, useThroughputWeek, usePRChangeRequestsWeek, useCloudSpendingMonthly, useCloudSpendingServices, useCloudSpendingCompared } from './api'
 import { Card, CardContent, CardHeader, CardTitle } from './components/ui/card'
 import { Sparkline } from './components/Sparkline'
 import { LineChart, Point } from './components/LineChart'
@@ -405,9 +405,11 @@ function CloudSpendingBlock() {
   const { t } = useTranslation()
   const monthlyQuery = useCloudSpendingMonthly()
   const servicesQuery = useCloudSpendingServices()
+  const comparedQuery = useCloudSpendingCompared()
 
   const monthlyData = monthlyQuery.data ?? []
   const servicesData = servicesQuery.data ?? []
+  const comparedData = comparedQuery.data ?? []
 
   // Process overall monthly data (Azure & GCP per month)
   const monthlyLabels = useMemo(() => {
@@ -506,6 +508,57 @@ function CloudSpendingBlock() {
     return map
   }, [servicesData, servicesLabels])
 
+  // Process compared services data
+  const comparedLabels = useMemo(() => {
+    const months = new Set<string>()
+    comparedData.forEach(r => {
+      const month = r['month']
+      if (month) months.add(month)
+    })
+    return Array.from(months).sort()
+  }, [comparedData])
+
+  const comparisons = useMemo(() => {
+    const map = new Map<string, { stacks: StackSeries[]; currency: string }>()
+    // Colors for comparison groups - can be more varied
+    const colors = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6']
+    
+    const tmp: Record<string, Record<string, number[]>> = {}
+    const cur: Record<string, Set<string>> = {}
+
+    comparedData.forEach(r => {
+      const comp = r['comparison']
+      const group = r['group']
+      const month = r['month']
+      if (!comp || !group || !month) return
+      const idx = comparedLabels.indexOf(month)
+      if (idx < 0) return
+      
+      if (!tmp[comp]) tmp[comp] = {}
+      if (!tmp[comp][group]) tmp[comp][group] = new Array(comparedLabels.length).fill(0)
+      tmp[comp][group][idx] = parseNumber(r['cost']) ?? 0
+      
+      const c = (r['currency'] || '').toString().trim()
+      if (c) {
+        if (!cur[comp]) cur[comp] = new Set<string>()
+        cur[comp].add(c)
+      }
+    })
+
+    Object.keys(tmp).forEach(comp => {
+      const groups = Object.keys(tmp[comp]).sort()
+      const stacks = groups.map((group, i) => ({
+        name: group,
+        values: tmp[comp][group],
+        color: colors[i % colors.length]
+      }))
+      const set = cur[comp]
+      const currency = set && set.size === 1 ? Array.from(set)[0] : ''
+      map.set(comp, { stacks, currency })
+    })
+    return map
+  }, [comparedData, comparedLabels])
+
   return (
     <section>
       <h2 className="text-xl font-semibold mb-3">{t('cloudSpending.sectionTitle')}</h2>
@@ -532,6 +585,27 @@ function CloudSpendingBlock() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Compared services: side-by-side comparison */}
+        {comparisons.size > 0 && Array.from(comparisons.entries()).map(([comp, info]) => (
+          <Card key={comp}>
+            <CardHeader>
+              <CardTitle>{comp}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="w-full overflow-x-auto">
+                <StackedBarChart
+                  labels={comparedLabels}
+                  stacks={info.stacks}
+                  width={Math.max(900, comparedLabels.length * 60)}
+                  height={300}
+                  yAxisLabel={info.currency ? `${t('cloudSpending.amount')} (${info.currency})` : t('cloudSpending.amount')}
+                  showLegend
+                />
+              </div>
+            </CardContent>
+          </Card>
+        ))}
 
         {/* Service-specific: one chart per service */}
         {servicesByService.size > 0 ? (
