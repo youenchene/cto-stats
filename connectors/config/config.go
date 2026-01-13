@@ -22,16 +22,22 @@ type Config struct {
 		Services []string `yaml:"services"`
 		// Grouped services: each logical name aggregates several concrete services
 		DetailedService []DetailedServiceGroup `yaml:"detailed_service"`
+		// Compared services: list of comparisons between two groups of services
+		ComparedService []ComparedService `yaml:"compared_service"`
 	} `yaml:"cloud_spending"`
 	// Backward/forward compatibility alias to support alternate YAML shape:
 	// cloudspending:
 	//   detailed_service:
 	//     - name: "AI"
 	//       services: ["Vertex AI", "Claude Sonnet 4.5"]
+	//   compared_service:
+	//     - name: "Old vs New"
+	//       groups: [...]
 	//   or (legacy flat list): ["Vertex AI", "Compute Engine", ...]
 	// If provided, we map it to CloudSpending.DetailedService or Services so downstream code keeps working.
 	CloudSpendingAlt struct {
-		DetailedService any `yaml:"detailed_service"`
+		DetailedService any               `yaml:"detailed_service"`
+		ComparedService []ComparedService `yaml:"compared_service"`
 	} `yaml:"cloudspending"`
 }
 
@@ -39,6 +45,12 @@ type Config struct {
 type DetailedServiceGroup struct {
 	Name     string   `yaml:"name"`
 	Services []string `yaml:"services"`
+}
+
+// ComparedService defines a comparison between several groups of services.
+type ComparedService struct {
+	Name   string                 `yaml:"name"`
+	Groups []DetailedServiceGroup `yaml:"groups"`
 }
 
 type Project struct {
@@ -114,6 +126,9 @@ func Load(path string) (*Config, error) {
 		}
 	}
 	// If only the new canonical grouped field is provided under cloud_spending, keep as is.
+	if len(c.CloudSpendingAlt.ComparedService) > 0 {
+		c.CloudSpending.ComparedService = c.CloudSpendingAlt.ComparedService
+	}
 	slog.Info(fmt.Sprintf("Loaded config: %s", path))
 	return &c, nil
 }

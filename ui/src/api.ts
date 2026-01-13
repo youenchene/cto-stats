@@ -71,3 +71,10 @@ export function useCloudSpendingServices() {
     queryFn: () => fetchJSON('/api/cloud_spending/services'),
   })
 }
+
+export function useCloudSpendingCompared() {
+  return useQuery<Row[]>({
+    queryKey: ['cloud_spending_compared'],
+    queryFn: () => fetchJSON('/api/cloud_spending/compared'),
+  })
+}

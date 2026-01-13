@@ -8,7 +8,7 @@ The generated KPI are :
  - **Lead time** and **cycle time** trend
  - **Stocks** per week : **Red Bin** for bug and **stocks** per **development process steps**.
  - **Statistics controlled** weekly **throughput** (issues closed per week)
- - **Cloud spending follow-up**: monthly Azure & GCP costs overall and per service/group
+ - **Cloud spending follow-up**: monthly Azure & GCP costs overall, per service/group and **compared groups**.
 
 Current sources are :
  - github issues of a github organization.
@@ -73,6 +73,7 @@ Basic indicator to identify Change request event per week on pull requests.
 Tracks cloud infrastructure spending over time from Azure and GCP. Two visualizations are provided:
 - **Overall costs per month**: Shows total spending per cloud provider (Azure & GCP) aggregated monthly.
 - **Per service/group costs per month**: Shows spending breakdown by logical groups (preferred) or by individual services, as configured in `config.yml`.
+- **Compared service groups per month**: Shows a side-by-side comparison of two or more service groups (e.g., Old Platform vs New Platform), as configured in `config.yml`.
 
 This helps identify cost trends, compare spending across providers, and track specific services that contribute most to cloud expenses.
 
@@ -227,6 +228,7 @@ Available API endpoints :
 - GET /api/pr/change_requests/repo_dist → data/pr_change_requests_repo_dist.csv
 - GET /api/cloud_spending/monthly → data/cloud_spending_monthly.csv
 - GET /api/cloud_spending/services → data/cloud_spending_services.csv
+- GET /api/cloud_spending/compared → data/cloud_spending_compared.csv
 
 Cloud Spending CSV formats:
 
@@ -240,6 +242,11 @@ Cloud Spending CSV formats:
     - Legacy flat mode: `month,provider,service,cost,currency`
   - Rows are aggregated by month, provider, and group/service, and currency (no cross-currency mixing).
   - If you configure `cloudspending.detailed_service` with groups, only services belonging to the defined groups are included (and exposed under the `group` column). If you configure a flat list (legacy), only those services are included (under the `service` column).
+
+- data/cloud_spending_compared.csv
+  - Headers: `comparison,month,group,cost,currency`
+  - Rows are aggregated by comparison name, month, group name and currency.
+  - Used for side-by-side comparison charts.
 
 ### Configuration (config.yml)
 
@@ -260,6 +267,16 @@ cloudspending:
       services:
         - "Cloud SQL"
         - "BigQuery"
+  compared_service:
+    - name: "Old Platform versus New Platform on GCP"
+      groups:
+        - name: "GCP Legacy"
+          services:
+            - "Compute Engine"
+        - name: "GCP New Platform"
+          services:
+            - "Cloud Run"
+            - "BigQuery"
 ```
 
 Legacy/alternate shapes also supported (backward compatible):
