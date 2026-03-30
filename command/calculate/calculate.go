@@ -850,10 +850,10 @@ func writeStocks(path string, rows []calculatedIssue) error {
 			return openedBug, false, false, false, false, false, true
 		}
 		if r.QAStartDatetime != nil {
-			return openedBug, false, false, false, true, false, false
+			return openedBug, false, false, false, false, true, false
 		}
 		if r.ReviewStartDatetime != nil {
-			return openedBug, false, false, true, false, false, false
+			return openedBug, false, false, false, true, false, false
 		}
 		if r.DevStartDatetime != nil {
 			return openedBug, false, false, true, false, false, false
@@ -1020,11 +1020,11 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 		}
 		// QA
 		if le(r.QAStartDatetime) && !le(r.WaitingToPodStartDatetime) {
-			return openedBug, false, false, false, true, false, false
+			return openedBug, false, false, false, false, true, false
 		}
 		// Review
 		if le(r.ReviewStartDatetime) && !le(r.QAStartDatetime) && !le(r.WaitingToPodStartDatetime) {
-			return openedBug, false, false, true, false, false, false
+			return openedBug, false, false, false, true, false, false
 		}
 		// Dev
 		if le(r.DevStartDatetime) && !le(r.ReviewStartDatetime) && !le(r.QAStartDatetime) && !le(r.WaitingToPodStartDatetime) {
