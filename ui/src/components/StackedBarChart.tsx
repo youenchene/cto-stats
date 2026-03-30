@@ -207,17 +207,38 @@ export function StackedBarChart({
       {/* Legend under the chart */}
       {showLegend && stacks.length > 0 && (
         (() => {
-          const itemW = 120 // fixed width per legend item
+          const charW = 7.5 // estimate 7.5px per character for 11px font
           const startX = paddingLeft
           const rectY = height - legendHeight + 6
-          const textY = rectY + 12
+          const textY = rectY
+          
+          let currentX = startX
+          const items = stacks.map((s) => {
+            const labelW = s.name.length * charW + 28 // 10px rect + 6px gap + 12px end padding
+            const item = { name: s.name, x: currentX, width: labelW }
+            currentX += labelW
+            return item
+          })
+          
+          const legendWidth = Math.min(width - paddingLeft - paddingRight, currentX - startX + 12)
           return (
             <g>
-              {stacks.map((s, i) => (
-                <g key={s.name}>
-                  <rect x={startX + i * itemW} y={rectY} width={10} height={10} fill={colorMap.get(s.name)} rx={2} ry={2} />
-                  <text x={startX + i * itemW + 16} y={textY} fontSize="11" fill="#374151">
-                    {s.name}
+              <rect
+                x={startX - 6}
+                y={rectY - 4}
+                width={legendWidth}
+                height={18}
+                fill="none"
+                stroke="#e5e7eb"
+                strokeWidth={1}
+                rx={2}
+                ry={2}
+              />
+              {items.map((item) => (
+                <g key={item.name}>
+                  <rect x={item.x} y={rectY} width={10} height={10} fill={colorMap.get(item.name)} rx={2} ry={2} />
+                  <text x={item.x + 16} y={textY + 9} fontSize="11" fill="#374151" alignmentBaseline="middle">
+                    {item.name}
                   </text>
                 </g>
               ))}

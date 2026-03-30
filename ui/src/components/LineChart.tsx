@@ -16,6 +16,8 @@ export function LineChart({
   showBandLabels = true,
   uclLabel = 'UCL',
   lclLabel = 'LCL',
+  legendLabels = [],
+  showLegend = false,
 }: {
   series: Point[][]
   width?: number
@@ -29,6 +31,8 @@ export function LineChart({
   showBandLabels?: boolean
   uclLabel?: string
   lclLabel?: string
+  legendLabels?: string[]
+  showLegend?: boolean
 }) {
   const allValues = series.flat().map((p) => p.value).filter((n) => Number.isFinite(n))
   if (allValues.length === 0) return <svg width={width} height={height} />
@@ -40,8 +44,10 @@ export function LineChart({
   // Add some extra left padding when a Y-axis title is present so it doesn't overlap ticks
   const leftPad = basePadding + (yAxisTitle ? 28 : 0)
   const padding = basePadding
+  const legendHeight = showLegend ? 22 : 0
   const innerW = width - leftPad - padding
-  const innerH = height - padding * 2
+  const innerH = height - padding * 2 - legendHeight
+  const paddingBottom = padding + legendHeight
 
   const x = (i: number) => leftPad + (count <= 1 ? innerW / 2 : (i * innerW) / (count - 1))
   const y = (v: number) => padding + (innerH - ((v - min) / rng) * innerH)
@@ -87,8 +93,8 @@ export function LineChart({
             </text>
           )}
           {/* axes */}
-          <line x1={leftPad} y1={padding} x2={leftPad} y2={height - padding} stroke="#e5e7eb" />
-          <line x1={leftPad} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#e5e7eb" />
+          <line x1={leftPad} y1={padding} x2={leftPad} y2={height - paddingBottom} stroke="#e5e7eb" />
+          <line x1={leftPad} y1={height - paddingBottom} x2={width - padding} y2={height - paddingBottom} stroke="#e5e7eb" />
           {/* y ticks */}
           {yTickVals.map((v, i) => (
             <g key={i}>
@@ -101,8 +107,8 @@ export function LineChart({
           {/* x grid + labels */}
           {xTickIndices.map((i, k) => (
             <g key={k}>
-              <line x1={x(i)} y1={padding} x2={x(i)} y2={height - padding} stroke="#f3f4f6" />
-              <text x={x(i)} y={height - padding + 14} textAnchor="middle" fontSize="10" fill="#6b7280">
+              <line x1={x(i)} y1={padding} x2={x(i)} y2={height - paddingBottom} stroke="#f3f4f6" />
+              <text x={x(i)} y={height - paddingBottom + 14} textAnchor="middle" fontSize="10" fill="#6b7280">
                 {series[0]?.[i]?.label ?? ''}
               </text>
             </g>
@@ -214,6 +220,48 @@ export function LineChart({
       )}
       {/* series paths */}
       {paths}
+      {/* Legend under the chart */}
+      {showLegend && legendLabels.length > 0 && (
+        (() => {
+          const charW = 7.5 // estimate 7.5px per character for 11px font
+          const startX = leftPad
+          const rectY = height - legendHeight + 6
+          const textY = rectY
+          
+          let currentX = startX
+          const items = legendLabels.map((label, i) => {
+            const labelW = label.length * charW + 28 // 10px rect + 6px gap + 12px end padding
+            const item = { label, x: currentX, width: labelW, color: colors[i % colors.length] }
+            currentX += labelW
+            return item
+          })
+
+          const legendWidth = Math.min(width - leftPad - padding, currentX - startX + 12)
+          return (
+            <g>
+              <rect
+                x={startX - 6}
+                y={rectY - 4}
+                width={legendWidth}
+                height={18}
+                fill="none"
+                stroke="#e5e7eb"
+                strokeWidth={1}
+                rx={2}
+                ry={2}
+              />
+              {items.map((item) => (
+                <g key={item.label}>
+                  <rect x={item.x} y={rectY} width={10} height={10} fill={item.color} rx={2} ry={2} />
+                  <text x={item.x + 16} y={textY + 9} fontSize="11" fill="#374151" alignmentBaseline="middle">
+                    {item.label}
+                  </text>
+                </g>
+              ))}
+            </g>
+          )
+        })()
+      )}
       {/* out-of-control markers: when main > UCL or main < LCL */}
       {showOOCMarkers && series.length >= 3 && (
         <g>

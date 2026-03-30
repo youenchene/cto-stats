@@ -196,7 +196,7 @@ function DevProcessBlock() {
                   const targetBarW = 12
                   const chartWidth = Math.max(900, padding * 2 + labelList.length * (targetBarW + barGap))
                   return (
-                    <StackedBarChart labels={labelList} stacks={stacks} width={chartWidth} height={240} yMax={yMax} barGap={barGap} />
+                    <StackedBarChart labels={labelList} stacks={stacks} width={chartWidth} height={240} yMax={yMax} barGap={barGap} showLegend />
                   )
                 })()}
               </div>
@@ -268,6 +268,32 @@ function StocksBlock() {
     return rs.reduce((acc, r) => acc + (parseNumber(r[key]) ?? 0), 0)
   }
 
+  function stacksForBugsBySource(): { labels: string[]; stacks: StackSeries[] } {
+    const sources = [
+      { key: 'opened_bugs_no_source', label: t('stocks.labels.defect_source.none') },
+      { key: 'opened_bugs_dev_process', label: t('stocks.labels.defect_source.dev_process') },
+      { key: 'opened_bugs_internal', label: t('stocks.labels.defect_source.internal') },
+      { key: 'opened_bugs_customer_facing', label: t('stocks.labels.defect_source.customer_facing') },
+    ]
+    const stacks: StackSeries[] = sources.map((s) => ({ name: s.label, values: Array(labelList.length).fill(0) }))
+    labelList.forEach((lab, idx) => {
+      const rs = groups.get(lab) ?? []
+      for (const r of rs) {
+        const openedBugs = parseNumber(r['opened_bugs']) ?? 0
+        const bcf = parseNumber(r['opened_bugs_customer_facing']) ?? 0
+        const bi = parseNumber(r['opened_bugs_internal']) ?? 0
+        const bdp = parseNumber(r['opened_bugs_dev_process']) ?? 0
+        const bns = Math.max(0, openedBugs - bcf - bi - bdp)
+
+        stacks[0].values[idx] += bns
+        stacks[1].values[idx] += bdp
+        stacks[2].values[idx] += bi
+        stacks[3].values[idx] += bcf
+      }
+    })
+    return { labels: labelList, stacks }
+  }
+
   const items: { key: string; labelKey: string }[] = [
     { key: 'opened_bugs', labelKey: 'opened_bugs' },
     { key: 'waiting_to_prod', labelKey: 'waiting_to_prod' },
@@ -300,31 +326,66 @@ function StocksBlock() {
           const { labels, stacks } = stacksFor(key)
           const total = sumFor(key)
           return (
-            <Card key={key}>
-              <CardHeader>
-                <CardTitle>{t(`stocks.labels.${labelKey}`)}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-4 gap-4 items-center">
-                  <div
-                    className="col-span-3 overflow-x-auto"
-                    ref={(el) => {
-                      if (el) {
-                        // Scroll to the far right when the element mounts or updates
-                        requestAnimationFrame(() => {
-                          ;(el as HTMLDivElement).scrollLeft = el.scrollWidth
-                        })
-                      }
-                    }}
-                  >
-                    <StackedBarChart labels={labels} stacks={stacks} width={900} height={220} yMax={globalYMax} />
+            <React.Fragment key={key}>
+              <Card>
+                <CardHeader>
+                  <CardTitle>{t(`stocks.labels.${labelKey}`)}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-4 gap-4 items-center">
+                    <div
+                      className="col-span-3 overflow-x-auto"
+                      ref={(el) => {
+                        if (el) {
+                          // Scroll to the far right when the element mounts or updates
+                          requestAnimationFrame(() => {
+                            ;(el as HTMLDivElement).scrollLeft = el.scrollWidth
+                          })
+                        }
+                      }}
+                    >
+                      <StackedBarChart labels={labels} stacks={stacks} width={900} height={220} yMax={globalYMax} showLegend />
+                    </div>
+                    <div className="col-span-1 flex justify-center">
+                      <BigNumber label={t('common.current')} value={total} unit={t('units.issues')} />
+                    </div>
                   </div>
-                  <div className="col-span-1 flex justify-center">
-                    <BigNumber label={t('common.current')} value={total} unit={t('units.issues')} />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
+              {key === 'opened_bugs' && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>{t('stocks.labels.opened_bugs_by_source')}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-4 gap-4 items-center">
+                      <div
+                        className="col-span-3 overflow-x-auto"
+                        ref={(el) => {
+                          if (el) {
+                            requestAnimationFrame(() => {
+                              ;(el as HTMLDivElement).scrollLeft = el.scrollWidth
+                            })
+                          }
+                        }}
+                      >
+                        <StackedBarChart
+                          labels={labels}
+                          stacks={stacksForBugsBySource().stacks}
+                          width={900}
+                          height={220}
+                          yMax={globalYMax}
+                          showLegend
+                        />
+                      </div>
+                      <div className="col-span-1 flex justify-center">
+                        <BigNumber label={t('common.current')} value={total} unit={t('units.issues')} />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </React.Fragment>
           )
         })}
       </div>
@@ -386,6 +447,8 @@ function ThroughputBlock() {
               yAxisTitle={t('throughput.yAxisTitle')}
               uclLabel={t('throughput.ucl')}
               lclLabel={t('throughput.lcl')}
+              showLegend
+              legendLabels={[t('throughput.yAxisTitle'), t('throughput.lcl'), t('throughput.ucl')]}
             />
           </div>
           {/* UCL/LCL definitions under the chart */}

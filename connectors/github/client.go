@@ -437,6 +437,59 @@ func (hc *Client) ListAllIssues(ctx context.Context, owner, repo, since string, 
         assignees(first:20){nodes{login}}
         labels(first:50){nodes{name}}
         issueType { name }
+        projectItems(first:10) {
+          nodes {
+            project {
+              fullDatabaseId
+              title
+            }
+            fieldValues(first:20) {
+              nodes {
+                __typename
+                ... on ProjectV2ItemFieldTextValue {
+                  text
+                  field {
+                    ... on ProjectV2FieldCommon {
+                      name
+                    }
+                  }
+                }
+                ... on ProjectV2ItemFieldIterationValue {
+                  title
+                  field {
+                    ... on ProjectV2FieldCommon {
+                      name
+                    }
+                  }
+                }
+                ... on ProjectV2ItemFieldSingleSelectValue {
+                  name
+                  field {
+                    ... on ProjectV2FieldCommon {
+                      name
+                    }
+                  }
+                }
+                ... on ProjectV2ItemFieldDateValue {
+                  date
+                  field {
+                    ... on ProjectV2FieldCommon {
+                      name
+                    }
+                  }
+                }
+                ... on ProjectV2ItemFieldNumberValue {
+                  number
+                  field {
+                    ... on ProjectV2FieldCommon {
+                      name
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -494,6 +547,27 @@ func (hc *Client) ListAllIssues(ctx context.Context, owner, repo, since string, 
 							IssueType *struct {
 								Name string `json:"name"`
 							} `json:"issueType"`
+							ProjectItems struct {
+								Nodes []struct {
+									Project struct {
+										FullDatabaseId string `json:"fullDatabaseId"`
+										Title          string `json:"title"`
+									} `json:"project"`
+									FieldValues struct {
+										Nodes []struct {
+											Typename string  `json:"__typename"`
+											Text     string  `json:"text,omitempty"`
+											Title    string  `json:"title,omitempty"`
+											Name     string  `json:"name,omitempty"`
+											Date     string  `json:"date,omitempty"`
+											Number   float64 `json:"number,omitempty"`
+											Field    struct {
+												Name string `json:"name"`
+											} `json:"field"`
+										} `json:"nodes"`
+									} `json:"fieldValues"`
+								} `json:"nodes"`
+							} `json:"projectItems"`
 						} `json:"nodes"`
 					} `json:"issues"`
 				} `json:"repository"`
@@ -537,6 +611,31 @@ func (hc *Client) ListAllIssues(ctx context.Context, owner, repo, since string, 
 			}
 			if n.IssueType != nil {
 				iss.Type = strings.ToLower(strings.TrimSpace(n.IssueType.Name))
+			}
+			for _, pi := range n.ProjectItems.Nodes {
+				for _, fv := range pi.FieldValues.Nodes {
+					val := ""
+					switch fv.Typename {
+					case "ProjectV2ItemFieldTextValue":
+						val = fv.Text
+					case "ProjectV2ItemFieldIterationValue":
+						val = fv.Title
+					case "ProjectV2ItemFieldSingleSelectValue":
+						val = fv.Name
+					case "ProjectV2ItemFieldDateValue":
+						val = fv.Date
+					case "ProjectV2ItemFieldNumberValue":
+						val = fmt.Sprintf("%v", fv.Number)
+					}
+					if val != "" {
+						iss.ProjectCustomFields = append(iss.ProjectCustomFields, gh.ProjectCustomField{
+							ProjectID:   pi.Project.FullDatabaseId,
+							ProjectName: pi.Project.Title,
+							FieldName:   fv.Field.Name,
+							FieldValue:  val,
+						})
+					}
+				}
 			}
 			all = append(all, iss)
 		}

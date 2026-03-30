@@ -66,8 +66,21 @@ type calculatedIssue struct {
 	WaitingToPodStartDatetime *time.Time
 	EndDatetime               *time.Time
 	Bug                       bool
+	BugCustomerFacing         bool
+	BugInternal               bool
+	BugDevProcess             bool
 	Type                      string
 	CurrentColumn             string
+}
+
+type projectCustomFieldRow struct {
+	Org         string
+	Repo        string
+	Number      string
+	ProjectID   string
+	ProjectName string
+	FieldName   string
+	FieldValue  string
 }
 
 // Run executes the calculate command
@@ -97,8 +110,18 @@ func Run(args []string) error {
 		cfgPath = "./config.yml"
 	}
 
+	// Read inputs from data/
+	base := "data"
+
 	var projCfgByID map[string]config.Project
 	projCfgByID = map[string]config.Project{}
+	var (
+		issues       map[string]issueRow
+		statusByID   map[string][]statusEventRow
+		projByID     map[string][]projectEventRow
+		customByID   map[string][]projectCustomFieldRow
+		bugSourceCfg config.BugSource
+	)
 	if *issuesScope {
 		// For issues calculations, a config file is required for project mappings
 		if _, err := os.Stat(cfgPath); err != nil {
@@ -108,22 +131,12 @@ func Run(args []string) error {
 		if err != nil {
 			return fmt.Errorf("calculate: failed to load config: %w", err)
 		}
+		bugSourceCfg = cfg.GitHub.BugSource
 		// Build a project lookup by ID for quick access
 		for _, p := range cfg.GitHub.Projects {
 			projCfgByID[p.ID] = p
 		}
-	}
 
-	// Read inputs from data/
-	base := "data"
-
-	var (
-		issues     map[string]issueRow
-		statusByID map[string][]statusEventRow
-		projByID   map[string][]projectEventRow
-	)
-	var err error
-	if *issuesScope {
 		issues, err = readIssues(filepath.Join(base, "issue.csv"))
 		if err != nil {
 			return err
@@ -136,6 +149,14 @@ func Run(args []string) error {
 		if err != nil {
 			return err
 		}
+		customByID, err = readProjectCustomFields(filepath.Join(base, "issue_project_custom_field.csv"))
+		if err != nil {
+			// for backward compatibility, if the file is missing we just ignore it
+			if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			customByID = map[string][]projectCustomFieldRow{}
+		}
 	}
 
 	// Build output
@@ -144,6 +165,7 @@ func Run(args []string) error {
 		for id, is := range issues {
 			projEvents := projByID[id]
 			st := statusByID[id]
+			customFields := customByID[id]
 
 			row := calculatedIssue{
 				ID:               id,
@@ -151,6 +173,22 @@ func Run(args []string) error {
 				CreationDatetime: is.CreatedAt,
 				Bug:              is.IsBug,
 				Type:             is.Type,
+			}
+
+			// If it's a bug, check custom fields for source
+			if is.IsBug && bugSourceCfg.CustomFieldName != "" {
+				for _, cf := range customFields {
+					if strings.EqualFold(cf.FieldName, bugSourceCfg.CustomFieldName) {
+						val := strings.TrimSpace(cf.FieldValue)
+						if strings.EqualFold(val, bugSourceCfg.CustomerFacingValue) {
+							row.BugCustomerFacing = true
+						} else if strings.EqualFold(val, bugSourceCfg.InternalValue) {
+							row.BugInternal = true
+						} else if strings.EqualFold(val, bugSourceCfg.DevProcessValue) {
+							row.BugDevProcess = true
+						}
+					}
+				}
 			}
 			// Determine project on first project event if any
 			var pid, pname string
@@ -434,6 +472,54 @@ func readProject(path string) (map[string][]projectEventRow, error) {
 	return res, nil
 }
 
+func readProjectCustomFields(path string) (map[string][]projectCustomFieldRow, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	r := csv.NewReader(f)
+	head, err := r.Read()
+	if err != nil {
+		return nil, err
+	}
+	idx := indexMap(head)
+	required := []string{"org", "repo", "number", "project_id", "project_name", "field_name", "field_value"}
+	for _, col := range required {
+		if _, ok := idx[col]; !ok {
+			return nil, fmt.Errorf("issue_project_custom_field.csv missing column %s", col)
+		}
+	}
+	res := map[string][]projectCustomFieldRow{}
+	for {
+		rec, err := r.Read()
+		if err != nil {
+			if err.Error() == "EOF" {
+				break
+			}
+			return nil, err
+		}
+		org := rec[idx["org"]]
+		repo := rec[idx["repo"]]
+		num := rec[idx["number"]]
+		pid := rec[idx["project_id"]]
+		pname := rec[idx["project_name"]]
+		fname := rec[idx["field_name"]]
+		fval := rec[idx["field_value"]]
+		id := key(org, repo, num)
+		res[id] = append(res[id], projectCustomFieldRow{
+			Org:         org,
+			Repo:        repo,
+			Number:      num,
+			ProjectID:   pid,
+			ProjectName: pname,
+			FieldName:   fname,
+			FieldValue:  fval,
+		})
+	}
+	return res, nil
+}
+
 func indexMap(headers []string) map[string]int {
 	m := map[string]int{}
 	for i, h := range headers {
@@ -531,7 +617,7 @@ func writeOutput(path string, rows []calculatedIssue) error {
 	defer f.Close()
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	headers := []string{"id", "name", "project_id", "project_name", "creationdatetime", "leadtimestartdatetime", "cycletimestartdatetime", "putinreadystartdatetime", "devstartdatetime", "reviewstartdatetime", "qastartdatetime", "waitingtopodstartdateime", "enddatetime", "bug", "type"}
+	headers := []string{"id", "name", "project_id", "project_name", "creationdatetime", "leadtimestartdatetime", "cycletimestartdatetime", "putinreadystartdatetime", "devstartdatetime", "reviewstartdatetime", "qastartdatetime", "waitingtopodstartdateime", "enddatetime", "bug", "bug_customer_facing", "bug_internal", "bug_dev_process", "type"}
 	if err := w.Write(headers); err != nil {
 		return err
 	}
@@ -551,6 +637,9 @@ func writeOutput(path string, rows []calculatedIssue) error {
 			formatTime(r.WaitingToPodStartDatetime),
 			formatTime(r.EndDatetime),
 			fmt.Sprintf("%t", r.Bug),
+			fmt.Sprintf("%t", r.BugCustomerFacing),
+			fmt.Sprintf("%t", r.BugInternal),
+			fmt.Sprintf("%t", r.BugDevProcess),
 			r.Type,
 		}
 		if err := w.Write(row); err != nil {
@@ -826,13 +915,16 @@ func writeWeeklyThroughput(path string, rows []calculatedIssue) error {
 func writeStocks(path string, rows []calculatedIssue) error {
 	// aggregate by project
 	type agg struct {
-		OpenedBugs    int
-		InBacklogs    int
-		InReady       int
-		InDev         int
-		InReview      int
-		InQA          int
-		WaitingToProd int
+		OpenedBugs               int
+		OpenedBugsCustomerFacing int
+		OpenedBugsInternal       int
+		OpenedBugsDevProcess     int
+		InBacklogs               int
+		InReady                  int
+		InDev                    int
+		InReview                 int
+		InQA                     int
+		WaitingToProd            int
 	}
 	byProj := map[string]struct {
 		ProjectID   string
@@ -840,29 +932,33 @@ func writeStocks(path string, rows []calculatedIssue) error {
 		Agg         agg
 	}{}
 	// helper to get bucket/stage booleans for a not-closed issue
-	stageFlags := func(r calculatedIssue) (openedBug bool, inBacklog bool, inReady bool, inDev bool, inReview bool, inQA bool, waiting bool) {
+	stageFlags := func(r calculatedIssue) (openedBug bool, bugCF bool, bugInternal bool, bugDev bool, inBacklog bool, inReady bool, inDev bool, inReview bool, inQA bool, waiting bool) {
 		if r.EndDatetime != nil {
-			return false, false, false, false, false, false, false
+			return false, false, false, false, false, false, false, false, false, false
 		}
 		openedBug = r.Bug
+		bugCF = r.BugCustomerFacing
+		bugInternal = r.BugInternal
+		bugDev = r.BugDevProcess
+
 		// Stage logic: furthest known stage wins (exclusive buckets)
 		if r.WaitingToPodStartDatetime != nil {
-			return openedBug, false, false, false, false, false, true
+			return openedBug, bugCF, bugInternal, bugDev, false, false, false, false, false, true
 		}
 		if r.QAStartDatetime != nil {
-			return openedBug, false, false, false, true, false, false
+			return openedBug, bugCF, bugInternal, bugDev, false, false, false, false, true, false
 		}
 		if r.ReviewStartDatetime != nil {
-			return openedBug, false, false, true, false, false, false
+			return openedBug, bugCF, bugInternal, bugDev, false, false, false, true, false, false
 		}
 		if r.DevStartDatetime != nil {
-			return openedBug, false, false, true, false, false, false
+			return openedBug, bugCF, bugInternal, bugDev, false, false, true, false, false, false
 		}
 		if r.PutInReadyStartDatetime != nil {
-			return openedBug, false, true, false, false, false, false
+			return openedBug, bugCF, bugInternal, bugDev, false, true, false, false, false, false
 		}
 		// Backlog (only early dates present: creation/lead/cycle)
-		return openedBug, true, false, false, false, false, false
+		return openedBug, bugCF, bugInternal, bugDev, true, false, false, false, false, false
 	}
 	for _, r := range rows {
 		if r.EndDatetime != nil {
@@ -872,9 +968,18 @@ func writeStocks(path string, rows []calculatedIssue) error {
 		rec := byProj[key]
 		rec.ProjectID = r.ProjectID
 		rec.ProjectName = r.ProjectName
-		ob, ib, iready, id, ir, iq, iw := stageFlags(r)
+		ob, bcf, bi, bd, ib, iready, id, ir, iq, iw := stageFlags(r)
 		if ob {
 			rec.Agg.OpenedBugs++
+		}
+		if bcf {
+			rec.Agg.OpenedBugsCustomerFacing++
+		}
+		if bi {
+			rec.Agg.OpenedBugsInternal++
+		}
+		if bd {
+			rec.Agg.OpenedBugsDevProcess++
 		}
 		if ib {
 			rec.Agg.InBacklogs++
@@ -907,7 +1012,7 @@ func writeStocks(path string, rows []calculatedIssue) error {
 	defer f.Close()
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	headers := []string{"project_id", "project_name", "opened_bugs", "in_backlogs", "in_ready", "in_dev", "in_review", "in_qa", "waiting_to_prod"}
+	headers := []string{"project_id", "project_name", "opened_bugs", "opened_bugs_customer_facing", "opened_bugs_internal", "opened_bugs_dev_process", "in_backlogs", "in_ready", "in_dev", "in_review", "in_qa", "waiting_to_prod"}
 	if err := w.Write(headers); err != nil {
 		return err
 	}
@@ -923,6 +1028,9 @@ func writeStocks(path string, rows []calculatedIssue) error {
 			rec.ProjectID,
 			rec.ProjectName,
 			fmt.Sprintf("%d", rec.Agg.OpenedBugs),
+			fmt.Sprintf("%d", rec.Agg.OpenedBugsCustomerFacing),
+			fmt.Sprintf("%d", rec.Agg.OpenedBugsInternal),
+			fmt.Sprintf("%d", rec.Agg.OpenedBugsDevProcess),
 			fmt.Sprintf("%d", rec.Agg.InBacklogs),
 			fmt.Sprintf("%d", rec.Agg.InReady),
 			fmt.Sprintf("%d", rec.Agg.InDev),
@@ -972,7 +1080,7 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 		defer f.Close()
 		w := csv.NewWriter(f)
 		defer w.Flush()
-		headers := []string{"year", "week", "project_id", "project_name", "opened_bugs", "in_backlogs", "in_ready", "in_dev", "in_review", "in_qa", "waiting_to_prod"}
+		headers := []string{"year", "week", "project_id", "project_name", "opened_bugs", "opened_bugs_customer_facing", "opened_bugs_internal", "opened_bugs_dev_process", "in_backlogs", "in_ready", "in_dev", "in_review", "in_qa", "waiting_to_prod"}
 		if err := w.Write(headers); err != nil {
 			return err
 		}
@@ -993,49 +1101,64 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 	end := alignToMonday(*maxT)
 	type wk struct{ Year, Week int }
 	// Iterate weeks
-	type agg struct{ OpenedBugs, InBacklogs, InReady, InDev, InReview, InQA, WaitingToProd int }
+	type agg struct {
+		OpenedBugs               int
+		OpenedBugsCustomerFacing int
+		OpenedBugsInternal       int
+		OpenedBugsDevProcess     int
+		InBacklogs               int
+		InReady                  int
+		InDev                    int
+		InReview                 int
+		InQA                     int
+		WaitingToProd            int
+	}
 	type rec struct {
 		ProjectID, ProjectName string
 		Agg                    agg
 	}
 	// Helper: determine stage at cutoff
-	stageAt := func(r calculatedIssue, weekStart time.Time, cutoff time.Time) (openedBug bool, inBacklog bool, inReady bool, inDev bool, inReview bool, inQA bool, waiting bool) {
+	stageAt := func(r calculatedIssue, weekStart time.Time, cutoff time.Time) (openedBug bool, bugCF bool, bugInternal bool, bugDev bool, inBacklog bool, inReady bool, inDev bool, inReview bool, inQA bool, waiting bool) {
 		cu := cutoff
 		// Not yet created
 		if timeUTC(r.CreationDatetime).After(cu) {
-			return false, false, false, false, false, false, false
+			return false, false, false, false, false, false, false, false, false, false
 		}
 		// If ended before week start, it is not in stock for this week
 		if r.EndDatetime != nil && r.EndDatetime.UTC().Before(weekStart) {
-			return false, false, false, false, false, false, false
+			return false, false, false, false, false, false, false, false, false, false
 		}
 		// Bug is in stock from creation until closure
 		openedBug = r.Bug
+		bugCF = r.BugCustomerFacing
+		bugInternal = r.BugInternal
+		bugDev = r.BugDevProcess
+
 		// Helper to check ts <= cutoff
 		le := func(t *time.Time) bool { return t != nil && !t.UTC().After(cu) }
 		// Furthest stage reached as of cutoff (no later stage timestamp <= cutoff)
 		// Waiting
 		if le(r.WaitingToPodStartDatetime) {
-			return openedBug, false, false, false, false, false, true
+			return openedBug, bugCF, bugInternal, bugDev, false, false, false, false, false, true
 		}
 		// QA
 		if le(r.QAStartDatetime) && !le(r.WaitingToPodStartDatetime) {
-			return openedBug, false, false, false, true, false, false
+			return openedBug, bugCF, bugInternal, bugDev, false, false, false, false, true, false
 		}
 		// Review
 		if le(r.ReviewStartDatetime) && !le(r.QAStartDatetime) && !le(r.WaitingToPodStartDatetime) {
-			return openedBug, false, false, true, false, false, false
+			return openedBug, bugCF, bugInternal, bugDev, false, false, false, true, false, false
 		}
 		// Dev
 		if le(r.DevStartDatetime) && !le(r.ReviewStartDatetime) && !le(r.QAStartDatetime) && !le(r.WaitingToPodStartDatetime) {
-			return openedBug, false, false, true, false, false, false
+			return openedBug, bugCF, bugInternal, bugDev, false, false, true, false, false, false
 		}
 		// In Ready
 		if le(r.PutInReadyStartDatetime) && !le(r.DevStartDatetime) && !le(r.ReviewStartDatetime) && !le(r.QAStartDatetime) && !le(r.WaitingToPodStartDatetime) {
-			return openedBug, false, true, false, false, false, false
+			return openedBug, bugCF, bugInternal, bugDev, false, true, false, false, false, false
 		}
 		// Backlog if created and no later stage as of cutoff
-		return openedBug, true, false, false, false, false, false
+		return openedBug, bugCF, bugInternal, bugDev, true, false, false, false, false, false
 	}
 	// Aggregate per week per project
 	byWeekProj := map[wk]map[string]rec{}
@@ -1045,7 +1168,7 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 		y, w := cur.ISOWeek()
 		projMap := map[string]rec{}
 		for _, r := range rows {
-			ob, ib, iready, id, ir, iq, iw := stageAt(r, cur, cutoff)
+			ob, bcf, bi, bd, ib, iready, id, ir, iq, iw := stageAt(r, cur, cutoff)
 			if !(ob || ib || iready || id || ir || iq || iw) {
 				continue
 			}
@@ -1055,6 +1178,15 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 			rr.ProjectName = r.ProjectName
 			if ob {
 				rr.Agg.OpenedBugs++
+			}
+			if bcf {
+				rr.Agg.OpenedBugsCustomerFacing++
+			}
+			if bi {
+				rr.Agg.OpenedBugsInternal++
+			}
+			if bd {
+				rr.Agg.OpenedBugsDevProcess++
 			}
 			if ib {
 				rr.Agg.InBacklogs++
@@ -1089,7 +1221,7 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 	defer f.Close()
 	w := csv.NewWriter(f)
 	defer w.Flush()
-	headers := []string{"year", "week", "project_id", "project_name", "opened_bugs", "in_backlogs", "in_ready", "in_dev", "in_review", "in_qa", "waiting_to_prod"}
+	headers := []string{"year", "week", "project_id", "project_name", "opened_bugs", "opened_bugs_customer_facing", "opened_bugs_internal", "opened_bugs_dev_process", "in_backlogs", "in_ready", "in_dev", "in_review", "in_qa", "waiting_to_prod"}
 	if err := w.Write(headers); err != nil {
 		return err
 	}
@@ -1120,6 +1252,9 @@ func writeWeeklyStocks(path string, rows []calculatedIssue) error {
 				rec.ProjectID,
 				rec.ProjectName,
 				fmt.Sprintf("%d", rec.Agg.OpenedBugs),
+				fmt.Sprintf("%d", rec.Agg.OpenedBugsCustomerFacing),
+				fmt.Sprintf("%d", rec.Agg.OpenedBugsInternal),
+				fmt.Sprintf("%d", rec.Agg.OpenedBugsDevProcess),
 				fmt.Sprintf("%d", rec.Agg.InBacklogs),
 				fmt.Sprintf("%d", rec.Agg.InReady),
 				fmt.Sprintf("%d", rec.Agg.InDev),
