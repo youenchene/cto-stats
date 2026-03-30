@@ -23,8 +23,8 @@
     "sectionTitle": "Stocks",
     "unassigned": "Unassigned",
     "labels": {
-      "opened_bugs": "Red bin (opened_bugs)",
-      "opened_bugs_by_source": "Red bins (by defect source)",
+      "opened_bugs": "Red bins (bugs by Project)",
+      "opened_bugs_by_source": "Red bins (bugs by defect source)",
       "waiting_to_prod": "Waiting to prod",
       "in_review": "In Review",
       "in_qa": "In QA",
@@ -33,9 +33,9 @@
       "in_backlogs": "In Backlogs",
       "defect_source": {
         "none": "no defect source",
-        "dev_process": "defect source dev_process",
-        "internal": "defect source internal",
-        "customer_facing": "defect source customer facing"
+        "dev_process": "During Development Process",
+        "internal": "Internal detection",
+        "customer_facing": "Detected by Customer"
       }
     }
   },

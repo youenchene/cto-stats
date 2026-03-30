@@ -196,7 +196,7 @@ function DevProcessBlock() {
                   const targetBarW = 12
                   const chartWidth = Math.max(900, padding * 2 + labelList.length * (targetBarW + barGap))
                   return (
-                    <StackedBarChart labels={labelList} stacks={stacks} width={chartWidth} height={240} yMax={yMax} barGap={barGap} />
+                    <StackedBarChart labels={labelList} stacks={stacks} width={chartWidth} height={240} yMax={yMax} barGap={barGap} showLegend />
                   )
                 })()}
               </div>
@@ -344,7 +344,7 @@ function StocksBlock() {
                         }
                       }}
                     >
-                      <StackedBarChart labels={labels} stacks={stacks} width={900} height={220} yMax={globalYMax} />
+                      <StackedBarChart labels={labels} stacks={stacks} width={900} height={220} yMax={globalYMax} showLegend />
                     </div>
                     <div className="col-span-1 flex justify-center">
                       <BigNumber label={t('common.current')} value={total} unit={t('units.issues')} />
@@ -375,6 +375,7 @@ function StocksBlock() {
                           width={900}
                           height={220}
                           yMax={globalYMax}
+                          showLegend
                         />
                       </div>
                       <div className="col-span-1 flex justify-center">
@@ -446,6 +447,8 @@ function ThroughputBlock() {
               yAxisTitle={t('throughput.yAxisTitle')}
               uclLabel={t('throughput.ucl')}
               lclLabel={t('throughput.lcl')}
+              showLegend
+              legendLabels={[t('throughput.yAxisTitle'), t('throughput.lcl'), t('throughput.ucl')]}
             />
           </div>
           {/* UCL/LCL definitions under the chart */}
