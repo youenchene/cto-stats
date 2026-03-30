@@ -14,8 +14,9 @@ import (
 // Only the fields currently needed by commands are modeled.
 type Config struct {
 	GitHub struct {
-		Org      string    `yaml:"org"`
-		Projects []Project `yaml:"projects"`
+		Org       string    `yaml:"org"`
+		BugSource BugSource `yaml:"bug-source"`
+		Projects  []Project `yaml:"projects"`
 	} `yaml:"github"`
 	CloudSpending struct {
 		// Flat list of services to include (legacy/simple mode)
@@ -39,6 +40,13 @@ type Config struct {
 		DetailedService any               `yaml:"detailed_service"`
 		ComparedService []ComparedService `yaml:"compared_service"`
 	} `yaml:"cloudspending"`
+}
+
+type BugSource struct {
+	CustomFieldName     string `yaml:"custom-field-name"`
+	CustomerFacingValue string `yaml:"customer-facing-value"`
+	InternalValue       string `yaml:"internal-value"`
+	DevProcessValue     string `yaml:"dev-process-value"`
 }
 
 // DetailedServiceGroup defines a logical group name and the list of concrete services it aggregates.

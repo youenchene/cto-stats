@@ -138,16 +138,17 @@ func Run(args []string) error {
 				}
 				// timeline aggregation below
 				report := IssueReport{
-					Org:       *org,
-					Repo:      r.Name,
-					Number:    is.Number,
-					Title:     is.Title,
-					URL:       is.HTMLURL,
-					State:     is.State,
-					Creator:   valueOrEmpty(is.User),
-					Assignees: usersToLogins(is.Assignees),
-					CreatedAt: is.CreatedAt,
-					ClosedAt:  is.ClosedAt,
+					Org:                 *org,
+					Repo:                r.Name,
+					Number:              is.Number,
+					Title:               is.Title,
+					URL:                 is.HTMLURL,
+					State:               is.State,
+					Creator:             valueOrEmpty(is.User),
+					Assignees:           usersToLogins(is.Assignees),
+					CreatedAt:           is.CreatedAt,
+					ClosedAt:            is.ClosedAt,
+					ProjectCustomFields: is.ProjectCustomFields,
 				}
 				// Prefer GitHub IssueType when available; fallback to label heuristics. Also set IsBug.
 				var typ string

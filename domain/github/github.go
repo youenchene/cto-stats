@@ -13,18 +13,19 @@ type Repo struct {
 
 // Issue represents a GitHub issue (excluding PRs which have PullRequest != nil)
 type Issue struct {
-	Number      int        `json:"number"`
-	Title       string     `json:"title"`
-	State       string     `json:"state"`
-	HTMLURL     string     `json:"html_url"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
-	ClosedAt    *time.Time `json:"closed_at"`
-	User        *User      `json:"user"`
-	Assignees   []User     `json:"assignees"`
-	Labels      []Label    `json:"labels"`
-	Type        string     `json:"type"`
-	PullRequest *struct{}  `json:"pull_request"`
+	Number              int                  `json:"number"`
+	Title               string               `json:"title"`
+	State               string               `json:"state"`
+	HTMLURL             string               `json:"html_url"`
+	CreatedAt           time.Time            `json:"created_at"`
+	UpdatedAt           time.Time            `json:"updated_at"`
+	ClosedAt            *time.Time           `json:"closed_at"`
+	User                *User                `json:"user"`
+	Assignees           []User               `json:"assignees"`
+	Labels              []Label              `json:"labels"`
+	Type                string               `json:"type"`
+	PullRequest         *struct{}            `json:"pull_request"`
+	ProjectCustomFields []ProjectCustomField `json:"project_custom_fields,omitempty"`
 }
 
 type User struct {
@@ -105,22 +106,30 @@ type ProjectMoveEvent struct {
 
 // IssueReport is the final aggregated record for output
 type IssueReport struct {
-	Org             string             `json:"org"`
-	Repo            string             `json:"repo"`
-	Number          int                `json:"number"`
-	Title           string             `json:"title"`
-	URL             string             `json:"url"`
-	State           string             `json:"state"`
-	Type            string             `json:"type,omitempty"`
-	IsBug           bool               `json:"is_bug"`
-	Creator         string             `json:"creator"`
-	Assignees       []string           `json:"assignees"`
-	CreatedAt       time.Time          `json:"created_at"`
-	ClosedAt        *time.Time         `json:"closed_at,omitempty"`
-	Committer       string             `json:"committer,omitempty"`
-	StatusHistory   []StatusEvent      `json:"status_history"`
-	ProjectHistory  []ProjectMoveEvent `json:"project_history"`
-	CurrentProjects []CurrentProject   `json:"current_projects"`
+	Org                 string               `json:"org"`
+	Repo                string               `json:"repo"`
+	Number              int                  `json:"number"`
+	Title               string               `json:"title"`
+	URL                 string               `json:"url"`
+	State               string               `json:"state"`
+	Type                string               `json:"type,omitempty"`
+	IsBug               bool                 `json:"is_bug"`
+	Creator             string               `json:"creator"`
+	Assignees           []string             `json:"assignees"`
+	CreatedAt           time.Time            `json:"created_at"`
+	ClosedAt            *time.Time           `json:"closed_at,omitempty"`
+	Committer           string               `json:"committer,omitempty"`
+	StatusHistory       []StatusEvent        `json:"status_history"`
+	ProjectHistory      []ProjectMoveEvent   `json:"project_history"`
+	CurrentProjects     []CurrentProject     `json:"current_projects"`
+	ProjectCustomFields []ProjectCustomField `json:"project_custom_fields,omitempty"`
+}
+
+type ProjectCustomField struct {
+	ProjectID   string `json:"project_id"`
+	ProjectName string `json:"project_name"`
+	FieldName   string `json:"field_name"`
+	FieldValue  string `json:"field_value"`
 }
 
 type CurrentProject struct {

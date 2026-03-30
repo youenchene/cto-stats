@@ -31,6 +31,9 @@ func WriteAllCSVs(org string, repos []gh.Repo, reports []gh.IssueReport) error {
 	if err := WriteIssueProjectCSV(filepath.Join(dir, "issue_project_event.csv"), reports); err != nil {
 		return err
 	}
+	if err := WriteIssueProjectCustomFieldCSV(filepath.Join(dir, "issue_project_custom_field.csv"), reports); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -191,6 +194,37 @@ func WriteIssueProjectCSV(path string, reports []gh.IssueReport) error {
 				ev.At.UTC().Format(time.RFC3339),
 				ev.By,
 				ev.Type,
+			}
+			if err := w.Write(row); err != nil {
+				return err
+			}
+		}
+	}
+	return w.Error()
+}
+
+func WriteIssueProjectCustomFieldCSV(path string, reports []gh.IssueReport) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	headers := []string{"org", "repo", "number", "project_id", "project_name", "field_name", "field_value"}
+	if err := w.Write(headers); err != nil {
+		return err
+	}
+	for _, rep := range reports {
+		for _, fv := range rep.ProjectCustomFields {
+			row := []string{
+				rep.Org,
+				rep.Repo,
+				strconv.Itoa(rep.Number),
+				fv.ProjectID,
+				fv.ProjectName,
+				fv.FieldName,
+				fv.FieldValue,
 			}
 			if err := w.Write(row); err != nil {
 				return err
